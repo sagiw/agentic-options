@@ -883,6 +883,33 @@ async function submitCloseOrder(legs) {
   return res.json();
 }
 
+// ── Estimate rolled option price ──
+// Uses sqrt(time) relationship for time value + delta adjustment for strike changes
+function estimateRolledPrice(currentPrice, currentDTE, newDTE, strikeDiff, currentStrike) {
+  if (!currentPrice || currentPrice <= 0) return 0;
+  const safeDTE = Math.max(currentDTE || 1, 1);
+  // Time value scales with sqrt(DTE)
+  const timeScaled = currentPrice * Math.sqrt(Math.max(newDTE, 1) / safeDTE);
+  // Strike shift effect: each $1 further OTM reduces value by ~delta (~0.3)
+  const strikeFactor = strikeDiff !== 0 && currentStrike > 0
+    ? Math.max(0.3, 1 - 0.3 * Math.abs(strikeDiff) / currentStrike)
+    : 1;
+  return timeScaled * strikeFactor;
+}
+
+// ── Calculate future expiration date (+N days from current exp) ──
+function futureExpDate(currentExp, addDays) {
+  if (!currentExp) return null;
+  const d = new Date(currentExp);
+  d.setDate(d.getDate() + addDays);
+  // Move to nearest Friday (options typically expire on Fridays)
+  const day = d.getDay();
+  if (day === 6) d.setDate(d.getDate() - 1); // Sat → Fri
+  else if (day === 0) d.setDate(d.getDate() + 5); // Sun → Fri
+  else if (day !== 5) d.setDate(d.getDate() + (5 - day)); // Mon-Thu → Fri
+  return d;
+}
+
 // ═══════════════════════════════════════════════════════════
 //  COMPONENTS
 // ═══════════════════════════════════════════════════════════
@@ -1684,6 +1711,42 @@ function PositionsTable({ positions }) {
                         const breakEvenPrice = isSold
                           ? (type === "put" ? p.contract.strike - perShareCost : p.contract.strike + perShareCost)
                           : (type === "call" ? p.contract.strike + perShareCost : p.contract.strike - perShareCost);
+
+                        // ── Roll calculation helpers ──
+                        const rollAddDays = 30; // roll ~30 days out
+                        const rollStrikeDiff = 5; // $5 strike shift for Down/Up rolls
+                        const newExpDate = futureExpDate(p.contract.expiration, rollAddDays);
+                        const newDTE = daysToExp != null ? daysToExp + rollAddDays : rollAddDays;
+                        const mult = p.contract.multiplier || 100;
+
+                        // Roll Out: same strike, later exp
+                        const rollOutNewPrice = roundTick(
+                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, 0, p.contract.strike),
+                          underlying
+                        );
+                        const rollOutNetCredit = isSold
+                          ? (rollOutNewPrice - currentPerShare)
+                          : (currentPerShare - rollOutNewPrice); // long: sell current, buy new (net debit)
+                        const rollOutNetPnL = rollOutNetCredit * Math.abs(p.quantity) * mult;
+
+                        // Roll Down & Out (put) / Roll Up & Out (call): shifted strike, later exp
+                        const shiftedStrike = type === "put"
+                          ? p.contract.strike - rollStrikeDiff
+                          : p.contract.strike + rollStrikeDiff;
+                        const rollShiftNewPrice = roundTick(
+                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, rollStrikeDiff, p.contract.strike),
+                          underlying
+                        );
+                        const rollShiftNetCredit = isSold
+                          ? (rollShiftNewPrice - currentPerShare)
+                          : (currentPerShare - rollShiftNewPrice);
+                        const rollShiftNetPnL = rollShiftNetCredit * Math.abs(p.quantity) * mult;
+
+                        const newExpStr = newExpDate
+                          ? newExpDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })
+                          : "~30d later";
+                        const newExpISO = newExpDate ? newExpDate.toISOString() : null;
+
                         const recoveryOptions = [];
 
                         if (isSold) {
@@ -1691,41 +1754,105 @@ function PositionsTable({ positions }) {
                           recoveryOptions.push({
                             name: "Roll Out (in time)",
                             tag: "Common", tagColor: "var(--accent-green)", tagBg: "rgba(16,185,129,0.15)",
-                            desc: `Buy to close the current ${type} and sell a new ${type} at the SAME strike ($${p.contract.strike}) but with a LATER expiration. You collect additional premium that can offset or reduce the loss.`,
+                            desc: `Buy to close the current ${type} and sell a new ${type} at the SAME strike ($${p.contract.strike}) but with a LATER expiration (~${newExpStr}). You collect additional premium that can offset or reduce the loss.`,
                             steps: [
-                              `In TWS: Right-click on ${sym} → Roll`,
-                              `Set action: ${closeAction} current + SELL new`,
-                              `Keep strike at $${p.contract.strike}, pick expiration 2-4 weeks later`,
-                              `Net credit should be positive (you receive more than you pay)`,
-                              `This gives the underlying more time to move in your favor`,
+                              `BUY to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
+                              `SELL to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp ${newExpStr} @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
+                              `Estimated net credit: ${rollOutNetCredit >= 0 ? "+" : ""}${fmt.usd(rollOutNetCredit)}/sh per contract`,
+                              `Estimated total P&L impact: ${rollOutNetPnL >= 0 ? "+" : ""}${fmt.usd(rollOutNetPnL)}`,
                             ],
                             canProfit: true,
+                            rollLegs: [
+                              {
+                                symbol: underlying, type: type, strike: p.contract.strike,
+                                expiration: p.contract.expiration, side: "buy",
+                                quantity: Math.abs(p.quantity),
+                                price: roundTick(currentPerShare, underlying),
+                                exchange: p.contract.exchange || "SMART",
+                              },
+                              {
+                                symbol: underlying, type: type, strike: p.contract.strike,
+                                expiration: newExpISO, side: "sell",
+                                quantity: Math.abs(p.quantity),
+                                price: rollOutNewPrice,
+                                exchange: p.contract.exchange || "SMART",
+                              },
+                            ],
+                            netCredit: rollOutNetCredit,
+                            netPnL: rollOutNetPnL,
+                            newStrike: p.contract.strike,
+                            newExp: newExpStr,
+                            newPrice: rollOutNewPrice,
                           });
                           if (type === "put") {
                             recoveryOptions.push({
                               name: "Roll Down & Out",
                               tag: "Defensive", tagColor: "var(--accent-cyan)", tagBg: "rgba(6,182,212,0.15)",
-                              desc: `Buy to close the current put and sell a new put at a LOWER strike with a later expiration. Reduces risk by moving the strike further from the current price, while collecting time premium.`,
+                              desc: `Buy to close the current put ($${p.contract.strike}) and sell a new put at a LOWER strike ($${shiftedStrike}) with exp ~${newExpStr}. Reduces risk by moving the strike further from the current price.`,
                               steps: [
-                                `Buy to Close: ${underlying} PUT $${p.contract.strike}`,
-                                `Sell to Open: ${underlying} PUT at a lower strike (e.g., $${(p.contract.strike - 5).toFixed(0)})`,
-                                `Choose expiration 2-4 weeks later to maximize time premium`,
-                                `Try for a net credit — this may not always be possible with a lower strike`,
+                                `BUY to Close: ${underlying} PUT $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
+                                `SELL to Open: ${underlying} PUT $${shiftedStrike} exp ${newExpStr} @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
+                                `Estimated net credit: ${rollShiftNetCredit >= 0 ? "+" : ""}${fmt.usd(rollShiftNetCredit)}/sh per contract`,
+                                `Estimated total P&L impact: ${rollShiftNetPnL >= 0 ? "+" : ""}${fmt.usd(rollShiftNetPnL)}`,
+                                `New strike $${shiftedStrike} gives more safety margin`,
                               ],
                               canProfit: true,
+                              rollLegs: [
+                                {
+                                  symbol: underlying, type: "put", strike: p.contract.strike,
+                                  expiration: p.contract.expiration, side: "buy",
+                                  quantity: Math.abs(p.quantity),
+                                  price: roundTick(currentPerShare, underlying),
+                                  exchange: p.contract.exchange || "SMART",
+                                },
+                                {
+                                  symbol: underlying, type: "put", strike: shiftedStrike,
+                                  expiration: newExpISO, side: "sell",
+                                  quantity: Math.abs(p.quantity),
+                                  price: rollShiftNewPrice,
+                                  exchange: p.contract.exchange || "SMART",
+                                },
+                              ],
+                              netCredit: rollShiftNetCredit,
+                              netPnL: rollShiftNetPnL,
+                              newStrike: shiftedStrike,
+                              newExp: newExpStr,
+                              newPrice: rollShiftNewPrice,
                             });
                           } else {
                             recoveryOptions.push({
                               name: "Roll Up & Out",
                               tag: "Defensive", tagColor: "var(--accent-cyan)", tagBg: "rgba(6,182,212,0.15)",
-                              desc: `Buy to close the current call and sell a new call at a HIGHER strike with a later expiration. Moves the strike further above current price.`,
+                              desc: `Buy to close the current call ($${p.contract.strike}) and sell a new call at a HIGHER strike ($${shiftedStrike}) with exp ~${newExpStr}. Moves the strike further above current price.`,
                               steps: [
-                                `Buy to Close: ${underlying} CALL $${p.contract.strike}`,
-                                `Sell to Open: ${underlying} CALL at a higher strike (e.g., $${(p.contract.strike + 5).toFixed(0)})`,
-                                `Choose expiration 2-4 weeks later`,
-                                `Aim for a net credit`,
+                                `BUY to Close: ${underlying} CALL $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
+                                `SELL to Open: ${underlying} CALL $${shiftedStrike} exp ${newExpStr} @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
+                                `Estimated net credit: ${rollShiftNetCredit >= 0 ? "+" : ""}${fmt.usd(rollShiftNetCredit)}/sh per contract`,
+                                `Estimated total P&L impact: ${rollShiftNetPnL >= 0 ? "+" : ""}${fmt.usd(rollShiftNetPnL)}`,
+                                `New strike $${shiftedStrike} gives more safety margin`,
                               ],
                               canProfit: true,
+                              rollLegs: [
+                                {
+                                  symbol: underlying, type: "call", strike: p.contract.strike,
+                                  expiration: p.contract.expiration, side: "buy",
+                                  quantity: Math.abs(p.quantity),
+                                  price: roundTick(currentPerShare, underlying),
+                                  exchange: p.contract.exchange || "SMART",
+                                },
+                                {
+                                  symbol: underlying, type: "call", strike: shiftedStrike,
+                                  expiration: newExpISO, side: "sell",
+                                  quantity: Math.abs(p.quantity),
+                                  price: rollShiftNewPrice,
+                                  exchange: p.contract.exchange || "SMART",
+                                },
+                              ],
+                              netCredit: rollShiftNetCredit,
+                              netPnL: rollShiftNetPnL,
+                              newStrike: shiftedStrike,
+                              newExp: newExpStr,
+                              newPrice: rollShiftNewPrice,
                             });
                           }
                           recoveryOptions.push({
@@ -1739,6 +1866,7 @@ function PositionsTable({ positions }) {
                               `Capital freed up for new trades`,
                             ],
                             canProfit: false,
+                            rollLegs: null,
                           });
                         } else {
                           // Long option at a loss — value dropped
@@ -1753,19 +1881,42 @@ function PositionsTable({ positions }) {
                                 `Monitor daily — set a mental stop loss (e.g., close if loss exceeds ${fmt.usd(totalPremium * 0.7)})`,
                               ],
                               canProfit: true,
+                              rollLegs: null,
                             });
                           }
                           recoveryOptions.push({
                             name: "Roll to Later Expiration",
                             tag: "Common", tagColor: "var(--accent-green)", tagBg: "rgba(16,185,129,0.15)",
-                            desc: `Sell your current ${type} and buy a new one at the same strike but with more time. Costs additional premium but gives the trade more time to work.`,
+                            desc: `Sell your current ${type} and buy a new one at the same strike ($${p.contract.strike}) but with more time (~${newExpStr}). Costs additional premium but gives the trade more time to work.`,
                             steps: [
-                              `Sell to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} (current)`,
-                              `Buy to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} (later expiration)`,
-                              `Net cost: the difference in premiums (debit)`,
+                              `SELL to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
+                              `BUY to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp ${newExpStr} @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
+                              `Estimated net debit: ${fmt.usd(Math.abs(rollOutNetCredit))}/sh per contract`,
+                              `Estimated additional cost: ${fmt.usd(Math.abs(rollOutNetPnL))}`,
                               `This resets the clock but at additional cost`,
                             ],
                             canProfit: true,
+                            rollLegs: [
+                              {
+                                symbol: underlying, type: type, strike: p.contract.strike,
+                                expiration: p.contract.expiration, side: "sell",
+                                quantity: Math.abs(p.quantity),
+                                price: roundTick(currentPerShare, underlying),
+                                exchange: p.contract.exchange || "SMART",
+                              },
+                              {
+                                symbol: underlying, type: type, strike: p.contract.strike,
+                                expiration: newExpISO, side: "buy",
+                                quantity: Math.abs(p.quantity),
+                                price: rollOutNewPrice,
+                                exchange: p.contract.exchange || "SMART",
+                              },
+                            ],
+                            netCredit: rollOutNetCredit,
+                            netPnL: rollOutNetPnL,
+                            newStrike: p.contract.strike,
+                            newExp: newExpStr,
+                            newPrice: rollOutNewPrice,
                           });
                           recoveryOptions.push({
                             name: "Sell a Spread (Reduce Cost)",
@@ -1778,6 +1929,7 @@ function PositionsTable({ positions }) {
                               `Max profit is now capped at the spread width minus net cost`,
                             ],
                             canProfit: true,
+                            rollLegs: null,
                           });
                           recoveryOptions.push({
                             name: "Close & Accept Loss",
@@ -1793,6 +1945,7 @@ function PositionsTable({ positions }) {
                               `Realized loss: ${fmt.usd(Math.abs(pnl))}`,
                             ],
                             canProfit: false,
+                            rollLegs: null,
                           });
                         }
 
@@ -1806,8 +1959,9 @@ function PositionsTable({ positions }) {
                               const recCloseKey = `rec-${i}-${oi}`;
                               const recStatus = closeStatus[recCloseKey];
                               const recMsg = closeMessage[recCloseKey];
-                              // Only "Close & Accept Loss" has a direct auto-execute action
                               const isCloseAction = opt.name === "Close & Accept Loss";
+                              const hasRollLegs = !!opt.rollLegs;
+                              // For Close & Accept Loss: single close leg
                               const closingLegs = isCloseAction ? [{
                                 symbol: underlying,
                                 type: type,
@@ -1817,7 +1971,8 @@ function PositionsTable({ positions }) {
                                 quantity: Math.abs(p.quantity),
                                 price: roundTick(currentPerShare, underlying),
                                 exchange: p.contract.exchange || "SMART",
-                              }] : null;
+                              }] : opt.rollLegs;
+                              const canExecute = isCloseAction || hasRollLegs;
 
                               return (
                               <div key={oi} className="pos-recovery-option" style={{
@@ -1844,8 +1999,40 @@ function PositionsTable({ positions }) {
                                   ))}
                                 </div>
 
-                                {/* ── Auto-execute button for this recovery option ── */}
-                                {isCloseAction && closingLegs && (
+                                {/* ── P&L Summary for roll strategies ── */}
+                                {hasRollLegs && opt.netPnL != null && (
+                                  <div style={{
+                                    marginTop: 8, padding: "8px 12px", borderRadius: 6,
+                                    background: opt.netPnL >= 0 ? "rgba(16,185,129,0.08)" : "rgba(239,68,68,0.08)",
+                                    border: `1px solid ${opt.netPnL >= 0 ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)"}`,
+                                    display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8,
+                                  }}>
+                                    <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                                      <div>
+                                        <span style={{ color: "var(--text-muted)" }}>New Strike: </span>
+                                        <span style={{ fontWeight: 700 }}>${opt.newStrike}</span>
+                                      </div>
+                                      <div>
+                                        <span style={{ color: "var(--text-muted)" }}>New Exp: </span>
+                                        <span style={{ fontWeight: 700 }}>{opt.newExp}</span>
+                                      </div>
+                                      <div>
+                                        <span style={{ color: "var(--text-muted)" }}>Est. Price: </span>
+                                        <span style={{ fontWeight: 700 }}>{fmt.usd(opt.newPrice)}/sh</span>
+                                      </div>
+                                    </div>
+                                    <div style={{
+                                      padding: "4px 12px", borderRadius: 6, fontWeight: 800, fontSize: 14,
+                                      background: opt.netPnL >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                                      color: opt.netPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                                    }}>
+                                      {opt.netPnL >= 0 ? "Credit" : "Debit"}: {opt.netPnL >= 0 ? "+" : ""}{fmt.usd(opt.netPnL)}
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* ── Auto-execute button ── */}
+                                {canExecute && closingLegs && (
                                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(30,41,59,0.5)" }}>
                                     {recStatus === "success" ? (
                                       <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {recMsg}</span>
@@ -1856,18 +2043,33 @@ function PositionsTable({ positions }) {
                                           onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Dismiss</button>
                                       </div>
                                     ) : recStatus === "submitting" ? (
-                                      <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting close order...</span>
+                                      <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>
+                                        ⏳ Submitting {hasRollLegs ? "roll" : "close"} order...
+                                      </span>
                                     ) : recStatus === "confirming" ? (
-                                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
                                         <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
-                                          ⚠️ Close {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} via IBKR?
+                                          {hasRollLegs ? (
+                                            <>⚠️ Roll {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} → ${opt.newStrike} {opt.newExp} via IBKR?</>
+                                          ) : (
+                                            <>⚠️ Close {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} via IBKR?</>
+                                          )}
                                         </span>
+                                        {hasRollLegs && opt.netPnL != null && (
+                                          <span style={{
+                                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
+                                            background: opt.netPnL >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                                            color: opt.netPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                                          }}>
+                                            Est. {opt.netPnL >= 0 ? "credit" : "debit"}: {fmt.usd(Math.abs(opt.netPnL))}
+                                          </span>
+                                        )}
                                         <button style={{
                                           padding: "6px 14px", fontSize: 12, fontWeight: 700,
                                           background: "var(--accent-green)", color: "#000", border: "none",
                                           borderRadius: 6, cursor: "pointer",
                                         }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
-                                          ✓ Confirm Close
+                                          ✓ Confirm {hasRollLegs ? "Roll" : "Close"}
                                         </button>
                                         <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
                                           onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Cancel</button>
@@ -1875,11 +2077,16 @@ function PositionsTable({ positions }) {
                                     ) : (
                                       <button style={{
                                         padding: "8px 16px", fontSize: 12, fontWeight: 700,
-                                        background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
-                                        border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
-                                        width: "100%",
+                                        background: hasRollLegs ? "rgba(59,130,246,0.15)" : "rgba(239,68,68,0.15)",
+                                        color: hasRollLegs ? "var(--accent-blue)" : "var(--accent-red)",
+                                        border: `1px solid ${hasRollLegs ? "rgba(59,130,246,0.3)" : "rgba(239,68,68,0.3)"}`,
+                                        borderRadius: 6, cursor: "pointer", width: "100%",
                                       }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
-                                        ⚡ Execute: {closeVerb} {Math.abs(p.quantity)}x @ {fmt.usd(roundTick(currentPerShare, underlying))}/sh via IBKR
+                                        {hasRollLegs ? (
+                                          <>⚡ Execute Roll: {closingLegs.length} legs → {opt.newStrike !== p.contract.strike ? `$${opt.newStrike}` : "same strike"} {opt.newExp} {opt.netPnL != null ? `(est. ${opt.netPnL >= 0 ? "credit" : "debit"} ${fmt.usd(Math.abs(opt.netPnL))})` : ""}</>
+                                        ) : (
+                                          <>⚡ Execute: {closeVerb} {Math.abs(p.quantity)}x @ {fmt.usd(roundTick(currentPerShare, underlying))}/sh via IBKR</>
+                                        )}
                                       </button>
                                     )}
                                   </div>
