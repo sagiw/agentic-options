@@ -21,6 +21,7 @@ import { config } from "../../config/index.js";
 import { calculateGreeks } from "../../quant/greeks.js";
 import { calculateLambda } from "../../quant/lambda.js";
 import { blackScholesPrice, impliedVolatility, type BSParams } from "../../quant/black-scholes.js";
+import { roundToTickSize } from "../../utils/tick-size.js";
 import type {
   OptionContract,
   OptionChainEntry,
@@ -864,7 +865,17 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     };
 
     if (params.orderType === "LMT" && params.limitPrice !== undefined) {
-      order.lmtPrice = params.limitPrice;
+      // Round to valid tick size as final safety net.
+      // IBKR rejects orders with prices that don't conform to minimum price variation.
+      const isOpt = params.secType === "OPT";
+      const rounded = roundToTickSize(params.limitPrice, params.symbol, !isOpt);
+      if (rounded !== params.limitPrice) {
+        log.info(
+          `  Tick-size safety net: $${params.limitPrice} → $${rounded} ` +
+          `(${params.symbol} ${isOpt ? "option" : "stock"})`
+        );
+      }
+      order.lmtPrice = rounded;
     }
 
     log.info(

@@ -21,6 +21,7 @@ import type { RankedStrategy, StrategyFactor } from "../types/agents.js";
 import { blackScholesPrice, type BSParams } from "./black-scholes.js";
 import { calculateGreeks } from "./greeks.js";
 import { calculateLambda } from "./lambda.js";
+import { roundToTickSize } from "../utils/tick-size.js";
 
 /** Determine account tier */
 export function getAccountTier(netLiquidation: number): AccountTier {
@@ -98,15 +99,17 @@ export function buildBullCallSpread(
   );
   if (!shortLeg) return null;
 
-  const netDebit = atm.mid - shortLeg.mid;
+  const buyPrice = roundToTickSize(atm.mid, underlying);
+  const sellPrice = roundToTickSize(shortLeg.mid, underlying);
+  const netDebit = buyPrice - sellPrice;
   const width = shortLeg.contract.strike - atm.contract.strike;
 
   return {
     name: `Bull Call Spread ${underlying} ${atm.contract.strike}/${shortLeg.contract.strike}`,
     type: "bull_call_spread",
     legs: [
-      { contract: atm.contract, side: "buy", quantity: 1, price: atm.mid },
-      { contract: shortLeg.contract, side: "sell", quantity: 1, price: shortLeg.mid },
+      { contract: atm.contract, side: "buy", quantity: 1, price: buyPrice },
+      { contract: shortLeg.contract, side: "sell", quantity: 1, price: sellPrice },
     ],
     maxProfit: (width - netDebit) * 100,
     maxLoss: netDebit * 100,
@@ -151,15 +154,17 @@ export function buildBearPutSpread(
     .pop();
   if (!shortLeg) return null;
 
-  const netDebit = atm.mid - shortLeg.mid;
+  const buyPrice = roundToTickSize(atm.mid, underlying);
+  const sellPrice = roundToTickSize(shortLeg.mid, underlying);
+  const netDebit = buyPrice - sellPrice;
   const width = atm.contract.strike - shortLeg.contract.strike;
 
   return {
     name: `Bear Put Spread ${underlying} ${shortLeg.contract.strike}/${atm.contract.strike}`,
     type: "bear_put_spread",
     legs: [
-      { contract: atm.contract, side: "buy", quantity: 1, price: atm.mid },
-      { contract: shortLeg.contract, side: "sell", quantity: 1, price: shortLeg.mid },
+      { contract: atm.contract, side: "buy", quantity: 1, price: buyPrice },
+      { contract: shortLeg.contract, side: "sell", quantity: 1, price: sellPrice },
     ],
     maxProfit: (width - netDebit) * 100,
     maxLoss: netDebit * 100,
@@ -201,17 +206,20 @@ export function buildIronCondor(
 
   if (!shortCall || !longCall || !shortPut || !longPut) return null;
 
-  const netCredit =
-    (shortCall.mid - longCall.mid) + (shortPut.mid - longPut.mid);
+  const lpPrice = roundToTickSize(longPut.mid, underlying);
+  const spPrice = roundToTickSize(shortPut.mid, underlying);
+  const scPrice = roundToTickSize(shortCall.mid, underlying);
+  const lcPrice = roundToTickSize(longCall.mid, underlying);
+  const netCredit = (scPrice - lcPrice) + (spPrice - lpPrice);
 
   return {
     name: `Iron Condor ${underlying} ${longPut.contract.strike}/${shortPut.contract.strike}/${shortCall.contract.strike}/${longCall.contract.strike}`,
     type: "iron_condor",
     legs: [
-      { contract: longPut.contract, side: "buy", quantity: 1, price: longPut.mid },
-      { contract: shortPut.contract, side: "sell", quantity: 1, price: shortPut.mid },
-      { contract: shortCall.contract, side: "sell", quantity: 1, price: shortCall.mid },
-      { contract: longCall.contract, side: "buy", quantity: 1, price: longCall.mid },
+      { contract: longPut.contract, side: "buy", quantity: 1, price: lpPrice },
+      { contract: shortPut.contract, side: "sell", quantity: 1, price: spPrice },
+      { contract: shortCall.contract, side: "sell", quantity: 1, price: scPrice },
+      { contract: longCall.contract, side: "buy", quantity: 1, price: lcPrice },
     ],
     maxProfit: netCredit * 100,
     maxLoss: (wingWidth - netCredit) * 100,
@@ -250,7 +258,7 @@ export function buildCashSecuredPut(
 
   // Sell the first OTM put (closest to ATM)
   const shortPut = puts[0];
-  const premium = shortPut.mid;
+  const premium = roundToTickSize(shortPut.mid, underlying);
 
   return {
     name: `Cash-Secured Put ${underlying} ${shortPut.contract.strike}`,

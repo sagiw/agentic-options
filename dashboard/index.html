@@ -834,6 +834,14 @@ const fmt = {
   sign: (v) => v == null ? "—" : (v >= 0 ? "+" : "") + v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
 };
 
+// IBKR tick size rounding — options <$3.00 trade in $0.05 (penny-pilot: $0.01), >= $3.00 in $0.10
+const PENNY_PILOT = new Set(["AAPL","AMD","AMZN","BAC","C","CSCO","DIS","EEM","EWZ","F","GE","GILD","GLD","GM","GOOGL","GOOG","IWM","JPM","META","MSFT","MU","NFLX","NVDA","PFE","QQQ","SNAP","SPY","SQ","T","TGT","TSLA","UBER","VXX","WFC","XLF"]);
+function roundTick(price, underlying) {
+  if (!price || price <= 0) return 0;
+  const tick = price >= 3.0 ? 0.10 : (underlying && PENNY_PILOT.has(underlying.toUpperCase()) ? 0.01 : 0.05);
+  return Math.round(Math.round(price / tick) * tick * 100) / 100;
+}
+
 async function apiFetch(endpoint) {
   try {
     const res = await fetch(API + endpoint);
@@ -1727,7 +1735,7 @@ function PositionsTable({ positions }) {
                         <div className="pos-close-step">
                           <div className="pos-close-step-num">4</div>
                           <div>
-                            Order Type: <b>LMT</b> — Limit Price: <b>{fmt.usd(currentPerShare)}</b>/sh
+                            Order Type: <b>LMT</b> — Limit Price: <b>{fmt.usd(roundTick(currentPerShare, p.contract.underlying || sym))}</b>/sh
                             <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
                               (midpoint — adjust for fill)
                             </span>
@@ -1766,7 +1774,7 @@ function PositionsTable({ positions }) {
                             `Multiplier: ${mult}`,
                             `Exchange: SMART`,
                             `Order Type: LMT`,
-                            `Limit Price: $${currentPerShare.toFixed(2)}`,
+                            `Limit Price: $${roundTick(currentPerShare, p.contract.underlying || sym).toFixed(2)}`,
                             `TIF: DAY`,
                           ].join("\n");
                           navigator.clipboard.writeText(text);
@@ -1786,7 +1794,7 @@ function PositionsTable({ positions }) {
                               type: type,
                               strike: p.contract.strike,
                               expiration: p.contract.expiration,
-                              price: currentPerShare,
+                              price: roundTick(currentPerShare, p.contract.underlying || sym),
                             }]}
                             strategyName={`Close ${sym}`}
                           />
@@ -1900,7 +1908,7 @@ function ManualLegPanel({ legs, strategyName }) {
         fields.push(
           { label: "Exchange", value: "SMART" },
           { label: "Order Type", value: "LMT" },
-          { label: "Limit Price", value: leg.price != null ? `$${Number(leg.price).toFixed(2)}` : "MKT" },
+          { label: "Limit Price", value: leg.price != null ? `$${roundTick(Number(leg.price), underlying).toFixed(2)}` : "MKT" },
           { label: "TIF", value: "DAY" },
         );
 

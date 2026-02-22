@@ -21,6 +21,7 @@ import {
 import { calculateGreeks, aggregateGreeks } from "../quant/greeks.js";
 import { calculateLambda, lambdaCurve } from "../quant/lambda.js";
 import { findStrategies, scoreStrategy } from "../quant/strategies.js";
+import { roundToTickSize } from "../utils/tick-size.js";
 import type {
   Agent,
   AgentMessage,
@@ -389,10 +390,10 @@ export class QuantAnalyst implements Agent {
               multiplier: 100,
               exchange: "SMART",
             },
-            bid: Math.max(price - spread / 2, 0.01),
-            ask: price + spread / 2,
-            mid: price,
-            last: price,
+            bid: roundToTickSize(Math.max(price - spread / 2, 0.01), symbol),
+            ask: roundToTickSize(price + spread / 2, symbol),
+            mid: roundToTickSize(price, symbol),
+            last: roundToTickSize(price, symbol),
             volume: Math.floor(Math.random() * 5000),
             openInterest: Math.floor(Math.random() * 20000),
             iv,

@@ -10,6 +10,7 @@
  */
 
 import { agentLogger } from "../../utils/logger.js";
+import { roundToTickSize } from "../../utils/tick-size.js";
 import type { PortfolioSync } from "./portfolio-sync.js";
 import type { OptionsStrategy, StrategyLeg } from "../../types/options.js";
 
@@ -145,6 +146,20 @@ async function submitLeg(
     }
   }
 
+  // Round limit price to valid tick size to avoid IBKR rejection:
+  // "The price does not conform to the minimum price variation for this contract."
+  const rawPrice = leg.price ?? 0;
+  const tickRoundedPrice = isOption
+    ? roundToTickSize(rawPrice, underlying)
+    : roundToTickSize(rawPrice, underlying, true);
+
+  if (rawPrice !== tickRoundedPrice) {
+    log.info(
+      `Tick size adjustment: $${rawPrice.toFixed(4)} → $${tickRoundedPrice.toFixed(2)} ` +
+      `(${underlying} ${isOption ? "option" : "stock"})`
+    );
+  }
+
   return ibkr.placeOrder({
     symbol: underlying,
     secType: isOption ? "OPT" : "STK",
@@ -155,7 +170,7 @@ async function submitLeg(
     action: leg.side === "buy" ? "BUY" : "SELL",
     quantity: leg.quantity,
     orderType,
-    limitPrice: leg.price,
+    limitPrice: tickRoundedPrice,
   });
 }
 
@@ -187,7 +202,9 @@ export function calculateNaturalPrice(legs: StrategyLeg[]): number {
  */
 export function adjustLimitPrice(
   naturalPrice: number,
-  improvementCents: number = 0
+  improvementCents: number = 0,
+  underlying?: string
 ): number {
-  return Math.round((naturalPrice + improvementCents / 100) * 100) / 100;
+  const adjusted = Math.round((naturalPrice + improvementCents / 100) * 100) / 100;
+  return roundToTickSize(adjusted, underlying);
 }
