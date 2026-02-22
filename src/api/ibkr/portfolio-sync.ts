@@ -39,6 +39,25 @@ import type { StockQuote, PriceBar } from "../../types/market.js";
 
 const log = agentLogger("ibkr-sync");
 
+/**
+ * Parse IBKR date string (YYYYMMDD or YYYYMM) into a proper Date object.
+ * new Date("20260320") returns Invalid Date in JavaScript — must parse manually.
+ */
+function parseIBKRDate(dateStr: string | undefined | null): Date {
+  if (!dateStr) return new Date(NaN);
+  const s = String(dateStr).trim();
+  // YYYYMMDD format (e.g. "20260320")
+  if (/^\d{8}$/.test(s)) {
+    return new Date(parseInt(s.slice(0, 4)), parseInt(s.slice(4, 6)) - 1, parseInt(s.slice(6, 8)));
+  }
+  // YYYYMM format (e.g. "202603")
+  if (/^\d{6}$/.test(s)) {
+    return new Date(parseInt(s.slice(0, 4)), parseInt(s.slice(4, 6)) - 1, 1);
+  }
+  // Fallback: try standard parsing (ISO, etc.)
+  return new Date(s);
+}
+
 /** Order status update from IBKR */
 export interface OrderStatusUpdate {
   orderId: number;
@@ -435,7 +454,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
             type: (contract.right === "C" ? "call" : "put") as OptionType,
             style: "american" as const,
             strike: contract.strike ?? 0,
-            expiration: new Date(contract.lastTradeDateOrContractMonth ?? ""),
+            expiration: parseIBKRDate(contract.lastTradeDateOrContractMonth),
             multiplier: parseInt(contract.multiplier ?? "100", 10),
             exchange: contract.exchange ?? "SMART",
             conId: contract.conId,
@@ -1416,7 +1435,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
             type: (contract.right === "C" ? "call" : "put") as OptionType,
             style: "american" as const,
             strike: contract.strike ?? 0,
-            expiration: new Date(contract.lastTradeDateOrContractMonth ?? ""),
+            expiration: parseIBKRDate(contract.lastTradeDateOrContractMonth),
             multiplier: parseInt(contract.multiplier ?? "100", 10),
             exchange: contract.exchange ?? "SMART",
             conId: contract.conId,

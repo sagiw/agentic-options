@@ -842,6 +842,18 @@ function roundTick(price, underlying) {
   return Math.round(Math.round(price / tick) * tick * 100) / 100;
 }
 
+// Parse date from various formats: YYYYMMDD string, ISO string, Date object, or epoch
+function parseExpDate(v) {
+  if (!v) return null;
+  const s = String(v).trim();
+  if (/^\d{8}$/.test(s)) {
+    // YYYYMMDD → local date (no UTC shift)
+    return new Date(parseInt(s.slice(0,4)), parseInt(s.slice(4,6))-1, parseInt(s.slice(6,8)));
+  }
+  const d = new Date(v);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 async function apiFetch(endpoint) {
   try {
     const res = await fetch(API + endpoint);
@@ -867,7 +879,7 @@ function formatPositionName(p) {
   const isOption = type === "call" || type === "put";
   if (!isOption) return underlying;
   const strike = p.contract.strike ? `$${p.contract.strike}` : "";
-  const exp = p.contract.expiration ? new Date(p.contract.expiration) : null;
+  const exp = parseExpDate(p.contract.expiration);
   const expStr = exp ? `${MONTH_SHORT[exp.getMonth()]} ${exp.getDate()}` : "";
   const side = p.quantity < 0 ? "Short" : "Long";
   return `${underlying} ${side} ${type === "call" ? "Call" : "Put"} ${strike} ${expStr}`.trim();
@@ -1262,7 +1274,7 @@ function PositionsTable({ positions }) {
           const totalMktVal = strat.legs.reduce((s, l) => s + (l.marketValue || 0), 0);
           const totalDelta = strat.legs.reduce((s, l) => s + (l.greeks?.delta || 0) * l.quantity, 0);
           const totalTheta = strat.legs.reduce((s, l) => s + (l.greeks?.theta || 0) * Math.abs(l.quantity), 0);
-          const expDate = strat.expiration && strat.expiration !== "none" ? new Date(strat.expiration) : null;
+          const expDate = strat.expiration && strat.expiration !== "none" ? parseExpDate(strat.expiration) : null;
           const daysToExp = expDate ? Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
           const isExpanded = expandedStrategy === si;
 
@@ -1463,7 +1475,7 @@ function PositionsTable({ positions }) {
                           const mult = l.contract.multiplier || 100;
                           const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
                           const lSym = l.contract.symbol || l.contract.underlying || "?";
-                          const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
+                          const lExp = parseExpDate(l.contract.expiration);
                           return (
                             <div key={li} style={{ marginBottom: li < strat.legs.length - 1 ? 8 : 0 }}>
                               <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
@@ -1496,7 +1508,7 @@ function PositionsTable({ positions }) {
                             const lCloseAction = l.quantity < 0 ? "BUY" : "SELL";
                             const mult = l.contract.multiplier || 100;
                             const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
-                            const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
+                            const lExp = parseExpDate(l.contract.expiration);
                             const expIBKR = lExp ? `${lExp.getFullYear()}${String(lExp.getMonth()+1).padStart(2,"0")}${String(lExp.getDate()).padStart(2,"0")}` : "—";
                             lines.push(`Leg ${li + 1}: ${lCloseAction} ${Math.abs(l.quantity)} ${l.contract.underlying || l.contract.symbol} ${isOpt ? lt.toUpperCase() : "STOCK"} ${l.contract.strike ? `$${l.contract.strike}` : ""} Exp: ${expIBKR} @ ~$${lCurrPerShare.toFixed(2)}/sh`);
                           });
@@ -1613,7 +1625,7 @@ function PositionsTable({ positions }) {
           const currentPerShare = p.marketValue ? Math.abs(p.marketValue) / (Math.abs(p.quantity) * mult) : 0;
 
           // Expiration analysis
-          const expDate = p.contract.expiration ? new Date(p.contract.expiration) : null;
+          const expDate = parseExpDate(p.contract.expiration);
           const daysToExp = expDate ? Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
           // Current position expiration in readable + YYYYMMDD format (local timezone — no UTC shift)
           const currentExpStr = expDate ? expDate.toLocaleDateString("en-US", {
@@ -2623,18 +2635,7 @@ function ManualLegPanel({ legs, strategyName }) {
       {legs.map((leg, li) => {
         const isOption = leg.type === "call" || leg.type === "put";
         const underlying = leg.underlying || leg.symbol || (strategyName || "").split(" ").find(w => /^[A-Z]{1,5}$/.test(w)) || "???";
-        // Parse expiration — handle YYYYMMDD string, ISO string, or Date object
-        let expDate = null;
-        if (leg.expiration) {
-          const expRaw = String(leg.expiration);
-          if (/^\d{8}$/.test(expRaw)) {
-            // YYYYMMDD → parse as local date (no UTC shift)
-            expDate = new Date(parseInt(expRaw.slice(0,4)), parseInt(expRaw.slice(4,6))-1, parseInt(expRaw.slice(6,8)));
-          } else {
-            expDate = new Date(leg.expiration);
-          }
-          if (isNaN(expDate.getTime())) expDate = null;
-        }
+        const expDate = parseExpDate(leg.expiration);
         const expStr = expDate
           ? expDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "2-digit" })
           : "—";
@@ -3197,7 +3198,8 @@ function OrdersTab({ orders }) {
                 </td>
                 <td style={{ fontSize: 12, fontWeight: 500 }}>
                   {o.expiration ? (() => {
-                    const d = new Date(o.expiration);
+                    const d = parseExpDate(o.expiration);
+                    if (!d) return <span style={{ color: "var(--text-muted)" }}>—</span>;
                     const now = new Date();
                     const daysLeft = Math.ceil((d - now) / (1000 * 60 * 60 * 24));
                     const dateStr = d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" });
@@ -3918,7 +3920,7 @@ function App() {
                                       <div key={li} className={`leg-badge ${leg.side === "buy" ? "leg-buy" : "leg-sell"}`}>
                                         {leg.side.toUpperCase()} {leg.quantity}x {leg.type.toUpperCase()} ${leg.strike}
                                         {leg.expiration && (() => {
-                                          const d = new Date(leg.expiration);
+                                          const d = parseExpDate(leg.expiration);
                                           return !isNaN(d.getTime()) ? (
                                             <span style={{ marginLeft: 4, opacity: 0.7, fontSize: 10 }}>
                                               {d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}

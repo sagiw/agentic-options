@@ -223,13 +223,20 @@ export function buildIronCondor(
       { contract: longCall.contract, side: "buy", quantity: 1, price: lcPrice },
     ],
     maxProfit: netCredit * 100,
-    maxLoss: (wingWidth - netCredit) * 100,
+    // Use actual wing widths (may differ from wingWidth param if exact strikes unavailable)
+    maxLoss: (Math.max(
+      shortCall.contract.strike ? longCall.contract.strike - shortCall.contract.strike : wingWidth,
+      shortPut.contract.strike ? shortPut.contract.strike - longPut.contract.strike : wingWidth,
+    ) - netCredit) * 100,
     breakeven: [
       shortPut.contract.strike - netCredit,
       shortCall.contract.strike + netCredit,
     ],
     netDebit: -netCredit * 100, // negative = credit
-    requiredCapital: (wingWidth - netCredit) * 100,
+    requiredCapital: (Math.max(
+      longCall.contract.strike - shortCall.contract.strike,
+      shortPut.contract.strike - longPut.contract.strike,
+    ) - netCredit) * 100,
   };
 }
 
@@ -287,8 +294,9 @@ export function scoreStrategy(
   const factors: StrategyFactor[] = [];
 
   // 1. Risk/Reward ratio (higher is better)
-  const maxProfitNum = strategy.maxProfit === "unlimited" ? strategy.maxLoss * 3 : strategy.maxProfit;
-  const riskReward = maxProfitNum / Math.max(strategy.maxLoss, 1);
+  const maxProfitNum = strategy.maxProfit === "unlimited" ? Math.abs(strategy.maxLoss) * 3 : strategy.maxProfit;
+  const maxLossAbs = Math.abs(strategy.maxLoss);
+  const riskReward = maxLossAbs > 0 ? maxProfitNum / maxLossAbs : 0;
   factors.push({
     name: "Risk/Reward Ratio",
     value: riskReward,
