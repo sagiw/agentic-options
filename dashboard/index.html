@@ -732,6 +732,72 @@
     .pos-recovery-step-bullet {
       color: var(--accent-cyan); font-weight: 800; flex-shrink: 0;
     }
+    /* Strategy group rows */
+    .strategy-group-row td {
+      background: rgba(139,92,246,0.06) !important;
+      border-bottom: 2px solid rgba(139,92,246,0.25);
+      padding: 10px 12px;
+    }
+    .strategy-group-label {
+      display: flex; align-items: center; gap: 8px;
+    }
+    .strategy-group-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 700;
+      background: rgba(139,92,246,0.15); color: var(--accent-purple);
+    }
+    .strategy-group-legs {
+      display: flex; gap: 6px; flex-wrap: wrap;
+    }
+    .strategy-group-leg {
+      font-size: 10px; padding: 2px 8px; border-radius: 4px;
+      background: rgba(255,255,255,0.06); color: var(--text-secondary);
+    }
+    .strategy-group-clickable {
+      cursor: pointer; transition: background 0.15s;
+    }
+    .strategy-group-clickable:hover td {
+      background: rgba(139,92,246,0.1) !important;
+    }
+    .strategy-close-panel {
+      padding: 20px; background: linear-gradient(135deg, rgba(139,92,246,0.04), rgba(59,130,246,0.04));
+    }
+    .strategy-close-verdict {
+      border-radius: 10px; padding: 16px; margin-bottom: 14px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .strategy-close-legs-table {
+      width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 14px;
+    }
+    .strategy-close-legs-table th {
+      text-align: left; padding: 6px 10px; font-size: 10px; text-transform: uppercase;
+      letter-spacing: 0.8px; color: var(--text-muted); border-bottom: 1px solid var(--border); font-weight: 500;
+    }
+    .strategy-close-legs-table td {
+      padding: 6px 10px; border-bottom: 1px solid rgba(30,41,59,0.3);
+    }
+    .strategy-close-summary {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+      background: rgba(0,0,0,0.15); border-radius: 8px; padding: 14px; margin-bottom: 14px;
+    }
+    .strategy-close-summary-stat { text-align: center; }
+    .strategy-close-summary-value { font-size: 18px; font-weight: 700; }
+    .strategy-close-summary-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; }
+    .strategy-close-how-panel {
+      background: rgba(0,0,0,0.1); border: 1px solid var(--border);
+      border-radius: 8px; padding: 14px; margin-bottom: 12px;
+    }
+    .strategy-close-how-title {
+      font-size: 13px; font-weight: 700; color: var(--accent-cyan);
+      margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+    }
+    .exp-badge {
+      display: inline-block; padding: 1px 6px; border-radius: 4px;
+      font-size: 10px; font-weight: 600;
+    }
+    .exp-safe { background: rgba(16,185,129,0.12); color: var(--accent-green); }
+    .exp-warning { background: rgba(245,158,11,0.12); color: var(--accent-amber); }
+    .exp-danger { background: rgba(239,68,68,0.12); color: var(--accent-red); }
     /* Responsive */
     @media (max-width: 1024px) {
       .metrics-grid { grid-template-columns: repeat(3, 1fr); }
@@ -830,17 +896,430 @@ function GreeksDisplay({ greeks }) {
 function PositionsTable({ positions }) {
   const [expandedPos, setExpandedPos] = useState(null);
   const [showCloseManual, setShowCloseManual] = useState(null);
+  const [expandedStrategy, setExpandedStrategy] = useState(null);
 
   if (!positions?.length) return <div className="loading">No positions loaded</div>;
+
+  // ── Detect multi-leg strategies ──
+  const optionPositions = positions.map((p, i) => ({ ...p, _idx: i })).filter(p => p.contract.type === "call" || p.contract.type === "put");
+  const stockPositions = positions.map((p, i) => ({ ...p, _idx: i })).filter(p => p.contract.type === "stock");
+
+  // Group options by underlying + expiration
+  const groups = {};
+  optionPositions.forEach(p => {
+    const underlying = p.contract.underlying || p.contract.symbol || "?";
+    const exp = p.contract.expiration || "none";
+    const key = `${underlying}|${exp}`;
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(p);
+  });
+
+  // Detect known strategies
+  const detectedStrategies = [];
+  const usedIndices = new Set();
+
+  Object.entries(groups).forEach(([key, legs]) => {
+    if (legs.length < 2) return;
+    const [underlying, exp] = key.split("|");
+    const calls = legs.filter(l => l.contract.type === "call").sort((a, b) => a.contract.strike - b.contract.strike);
+    const puts = legs.filter(l => l.contract.type === "put").sort((a, b) => a.contract.strike - b.contract.strike);
+
+    // Bull Call Spread: long lower-strike call + short higher-strike call
+    if (calls.length >= 2) {
+      for (let i = 0; i < calls.length - 1; i++) {
+        for (let j = i + 1; j < calls.length; j++) {
+          if (calls[i].quantity > 0 && calls[j].quantity < 0 && !usedIndices.has(calls[i]._idx) && !usedIndices.has(calls[j]._idx)) {
+            detectedStrategies.push({
+              name: "Bull Call Spread", underlying, expiration: exp,
+              legs: [calls[i], calls[j]], indices: [calls[i]._idx, calls[j]._idx],
+              icon: "📈",
+            });
+            usedIndices.add(calls[i]._idx); usedIndices.add(calls[j]._idx);
+          } else if (calls[i].quantity < 0 && calls[j].quantity > 0 && !usedIndices.has(calls[i]._idx) && !usedIndices.has(calls[j]._idx)) {
+            detectedStrategies.push({
+              name: "Bear Call Spread", underlying, expiration: exp,
+              legs: [calls[i], calls[j]], indices: [calls[i]._idx, calls[j]._idx],
+              icon: "📉",
+            });
+            usedIndices.add(calls[i]._idx); usedIndices.add(calls[j]._idx);
+          }
+        }
+      }
+    }
+
+    // Bear Put Spread: long higher-strike put + short lower-strike put
+    // Bull Put Spread: short higher-strike put + long lower-strike put
+    if (puts.length >= 2) {
+      for (let i = 0; i < puts.length - 1; i++) {
+        for (let j = i + 1; j < puts.length; j++) {
+          if (puts[i].quantity < 0 && puts[j].quantity > 0 && !usedIndices.has(puts[i]._idx) && !usedIndices.has(puts[j]._idx)) {
+            detectedStrategies.push({
+              name: "Bear Put Spread", underlying, expiration: exp,
+              legs: [puts[i], puts[j]], indices: [puts[i]._idx, puts[j]._idx],
+              icon: "📉",
+            });
+            usedIndices.add(puts[i]._idx); usedIndices.add(puts[j]._idx);
+          } else if (puts[i].quantity > 0 && puts[j].quantity < 0 && !usedIndices.has(puts[i]._idx) && !usedIndices.has(puts[j]._idx)) {
+            detectedStrategies.push({
+              name: "Bull Put Spread", underlying, expiration: exp,
+              legs: [puts[i], puts[j]], indices: [puts[i]._idx, puts[j]._idx],
+              icon: "📈",
+            });
+            usedIndices.add(puts[i]._idx); usedIndices.add(puts[j]._idx);
+          }
+        }
+      }
+    }
+
+    // Straddle: same strike call + put
+    calls.forEach(c => {
+      puts.forEach(p => {
+        if (c.contract.strike === p.contract.strike && !usedIndices.has(c._idx) && !usedIndices.has(p._idx)
+            && ((c.quantity > 0 && p.quantity > 0) || (c.quantity < 0 && p.quantity < 0))) {
+          const isShort = c.quantity < 0;
+          detectedStrategies.push({
+            name: isShort ? "Short Straddle" : "Long Straddle", underlying, expiration: exp,
+            legs: [c, p], indices: [c._idx, p._idx],
+            icon: isShort ? "🔻" : "🔀",
+          });
+          usedIndices.add(c._idx); usedIndices.add(p._idx);
+        }
+      });
+    });
+
+    // Strangle: different strike call + put
+    calls.forEach(c => {
+      puts.forEach(p => {
+        if (c.contract.strike !== p.contract.strike && !usedIndices.has(c._idx) && !usedIndices.has(p._idx)
+            && ((c.quantity > 0 && p.quantity > 0) || (c.quantity < 0 && p.quantity < 0))) {
+          const isShort = c.quantity < 0;
+          detectedStrategies.push({
+            name: isShort ? "Short Strangle" : "Long Strangle", underlying, expiration: exp,
+            legs: [c, p], indices: [c._idx, p._idx],
+            icon: isShort ? "🔻" : "🔀",
+          });
+          usedIndices.add(c._idx); usedIndices.add(p._idx);
+        }
+      });
+    });
+  });
+
+  // Iron Condor: check if we can combine a bull put spread + bear call spread on same underlying
+  for (let i = 0; i < detectedStrategies.length; i++) {
+    for (let j = i + 1; j < detectedStrategies.length; j++) {
+      const a = detectedStrategies[i], b = detectedStrategies[j];
+      if (a.underlying === b.underlying && a.expiration === b.expiration) {
+        if ((a.name === "Bull Put Spread" && b.name === "Bear Call Spread") ||
+            (a.name === "Bear Call Spread" && b.name === "Bull Put Spread")) {
+          const bps = a.name === "Bull Put Spread" ? a : b;
+          const bcs = a.name === "Bear Call Spread" ? a : b;
+          const combined = {
+            name: "Iron Condor", underlying: a.underlying, expiration: a.expiration,
+            legs: [...bps.legs, ...bcs.legs],
+            indices: [...bps.indices, ...bcs.indices],
+            icon: "🦅",
+          };
+          // Remove both, add combined
+          detectedStrategies.splice(Math.max(i, j), 1);
+          detectedStrategies.splice(Math.min(i, j), 1);
+          detectedStrategies.push(combined);
+          break;
+        }
+      }
+    }
+  }
+
+  // Covered Call: stock + short call on same underlying
+  stockPositions.forEach(stock => {
+    const stockSym = stock.contract.symbol || "?";
+    optionPositions.forEach(opt => {
+      const optUnderlying = opt.contract.underlying || opt.contract.symbol || "?";
+      if (optUnderlying === stockSym && opt.contract.type === "call" && opt.quantity < 0
+          && !usedIndices.has(opt._idx)) {
+        detectedStrategies.push({
+          name: "Covered Call", underlying: stockSym, expiration: opt.contract.expiration || "none",
+          legs: [stock, opt], indices: [stock._idx, opt._idx],
+          icon: "🛡️",
+        });
+        usedIndices.add(stock._idx); usedIndices.add(opt._idx);
+      }
+    });
+  });
+
+  // Protective Put: stock + long put on same underlying
+  stockPositions.forEach(stock => {
+    const stockSym = stock.contract.symbol || "?";
+    optionPositions.forEach(opt => {
+      const optUnderlying = opt.contract.underlying || opt.contract.symbol || "?";
+      if (optUnderlying === stockSym && opt.contract.type === "put" && opt.quantity > 0
+          && !usedIndices.has(opt._idx)) {
+        detectedStrategies.push({
+          name: "Protective Put", underlying: stockSym, expiration: opt.contract.expiration || "none",
+          legs: [stock, opt], indices: [stock._idx, opt._idx],
+          icon: "🛡️",
+        });
+        usedIndices.add(stock._idx); usedIndices.add(opt._idx);
+      }
+    });
+  });
+
   return (
     <table className="table">
       <thead>
         <tr>
-          <th>Symbol</th><th>Type</th><th>Qty</th><th>Avg Cost</th>
+          <th>Symbol</th><th>Type</th><th>Expiration</th><th>Qty</th><th>Avg Cost</th>
           <th>Premium Paid/Rcvd</th><th>Mkt Value</th><th>P&L</th><th>Delta</th><th>Theta</th>
         </tr>
       </thead>
       <tbody>
+        {/* ── Detected strategy group rows ── */}
+        {detectedStrategies.map((strat, si) => {
+          const totalPnL = strat.legs.reduce((s, l) => s + (l.unrealizedPnL || 0), 0);
+          const totalMktVal = strat.legs.reduce((s, l) => s + (l.marketValue || 0), 0);
+          const totalDelta = strat.legs.reduce((s, l) => s + (l.greeks?.delta || 0) * l.quantity, 0);
+          const totalTheta = strat.legs.reduce((s, l) => s + (l.greeks?.theta || 0) * Math.abs(l.quantity), 0);
+          const expDate = strat.expiration && strat.expiration !== "none" ? new Date(strat.expiration) : null;
+          const daysToExp = expDate ? Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
+          const isExpanded = expandedStrategy === si;
+
+          return (
+            <React.Fragment key={`strat-${si}`}>
+              <tr className="strategy-group-row strategy-group-clickable"
+                onClick={() => setExpandedStrategy(isExpanded ? null : si)}>
+                <td>
+                  <div className="strategy-group-label">
+                    <span className="strategy-group-badge">{strat.icon} {strat.name}</span>
+                    <span style={{ fontWeight: 600 }}>{strat.underlying}</span>
+                    <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{isExpanded ? "▲" : "▼"}</span>
+                  </div>
+                </td>
+                <td>
+                  <div className="strategy-group-legs">
+                    {strat.legs.map((l, li) => {
+                      const lt = l.contract.type;
+                      const isOpt = lt === "call" || lt === "put";
+                      return (
+                        <span key={li} className="strategy-group-leg">
+                          {l.quantity > 0 ? "+" : ""}{l.quantity} {lt.toUpperCase()}
+                          {isOpt && l.contract.strike ? ` $${l.contract.strike}` : ""}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </td>
+                <td>
+                  {expDate ? (
+                    <span className={`exp-badge ${daysToExp <= 7 ? "exp-danger" : daysToExp <= 21 ? "exp-warning" : "exp-safe"}`}>
+                      {expDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      <span style={{ marginLeft: 4, opacity: 0.8 }}>({daysToExp}d)</span>
+                    </span>
+                  ) : "—"}
+                </td>
+                <td style={{ color: "var(--accent-purple)", fontWeight: 600 }}>
+                  {strat.legs.length} legs
+                </td>
+                <td>—</td>
+                <td>—</td>
+                <td>{fmt.usd(totalMktVal)}</td>
+                <td className={totalPnL >= 0 ? "positive" : "negative"} style={{ fontWeight: 700 }}>
+                  {fmt.sign(totalPnL)}
+                </td>
+                <td>{fmt.num(totalDelta, 3)}</td>
+                <td>{fmt.sign(totalTheta)}</td>
+              </tr>
+
+              {/* ── Expanded strategy close analysis ── */}
+              {isExpanded && (
+                <tr>
+                  <td colSpan={10} style={{ padding: 0 }}>
+                    <div className="strategy-close-panel">
+
+                      {/* Strategy verdict banner */}
+                      {totalPnL > 0 ? (
+                        <div className="strategy-close-verdict pos-verdict-profit">
+                          <div className="pos-verdict-icon">✅</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">
+                              Close Entire {strat.name} = PROFIT of {fmt.usd(totalPnL)}
+                            </div>
+                            <div className="pos-verdict-sub">
+                              Closing all {strat.legs.length} legs together results in a net profit. Individual leg P&Ls are shown below.
+                            </div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(16,185,129,0.2)", color: "var(--accent-green)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            +{fmt.usd(totalPnL)}
+                          </div>
+                        </div>
+                      ) : totalPnL < 0 ? (
+                        <div className="strategy-close-verdict pos-verdict-loss">
+                          <div className="pos-verdict-icon">❌</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">
+                              Close Entire {strat.name} = LOSS of {fmt.usd(Math.abs(totalPnL))}
+                            </div>
+                            <div className="pos-verdict-sub">
+                              Closing all legs together results in a net loss. Consider adjusting individual legs or rolling the strategy.
+                            </div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(239,68,68,0.2)", color: "var(--accent-red)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            {fmt.usd(totalPnL)}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="strategy-close-verdict pos-verdict-breakeven">
+                          <div className="pos-verdict-icon">⚖️</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">Close Entire {strat.name} = BREAKEVEN</div>
+                            <div className="pos-verdict-sub">Combined P&L is zero across all legs.</div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(245,158,11,0.2)", color: "var(--accent-amber)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            $0
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Summary stats */}
+                      <div className="strategy-close-summary">
+                        <div className="strategy-close-summary-stat">
+                          <div className="strategy-close-summary-value" style={{ color: "var(--accent-purple)" }}>
+                            {strat.legs.length}
+                          </div>
+                          <div className="strategy-close-summary-label">Legs</div>
+                        </div>
+                        <div className="strategy-close-summary-stat">
+                          <div className="strategy-close-summary-value" style={{
+                            color: totalPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)"
+                          }}>
+                            {fmt.sign(totalPnL)}
+                          </div>
+                          <div className="strategy-close-summary-label">Combined P&L</div>
+                        </div>
+                        <div className="strategy-close-summary-stat">
+                          <div className="strategy-close-summary-value" style={{ color: "var(--accent-blue)" }}>
+                            {fmt.usd(Math.abs(totalMktVal))}
+                          </div>
+                          <div className="strategy-close-summary-label">Market Value</div>
+                        </div>
+                        <div className="strategy-close-summary-stat">
+                          <div className="strategy-close-summary-value" style={{
+                            color: daysToExp != null && daysToExp <= 7 ? "var(--accent-red)"
+                              : daysToExp != null && daysToExp <= 21 ? "var(--accent-amber)"
+                              : "var(--text-primary)"
+                          }}>
+                            {daysToExp != null ? `${daysToExp}d` : "—"}
+                          </div>
+                          <div className="strategy-close-summary-label">Days to Exp</div>
+                        </div>
+                      </div>
+
+                      {/* Per-leg breakdown table */}
+                      <table className="strategy-close-legs-table">
+                        <thead>
+                          <tr>
+                            <th>Leg</th><th>Type</th><th>Strike</th><th>Qty</th>
+                            <th>Entry</th><th>Current</th><th>P&L</th><th>Close Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {strat.legs.map((l, li) => {
+                            const lt = l.contract.type;
+                            const isOpt = lt === "call" || lt === "put";
+                            const mult = l.contract.multiplier || 100;
+                            const lPerShare = isOpt ? l.averageCost / mult : l.averageCost;
+                            const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
+                            const lPnl = l.unrealizedPnL || 0;
+                            const lCloseAction = l.quantity < 0 ? "BUY to Close" : "SELL to Close";
+                            return (
+                              <tr key={li}>
+                                <td style={{ fontWeight: 600 }}>{l.contract.underlying || l.contract.symbol}</td>
+                                <td><span className={`badge ${lt === "call" ? "badge-call" : lt === "put" ? "badge-put" : "badge-stock"}`}>{lt}</span></td>
+                                <td>{l.contract.strike ? `$${l.contract.strike}` : "—"}</td>
+                                <td style={{ color: l.quantity >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                                  {l.quantity > 0 ? "+" : ""}{l.quantity}
+                                </td>
+                                <td>{fmt.usd(lPerShare)}/sh</td>
+                                <td>{fmt.usd(lCurrPerShare)}/sh</td>
+                                <td className={lPnl >= 0 ? "positive" : "negative"} style={{ fontWeight: 600 }}>
+                                  {fmt.sign(lPnl)}
+                                </td>
+                                <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{lCloseAction}</td>
+                              </tr>
+                            );
+                          })}
+                          <tr style={{ borderTop: "2px solid var(--accent-purple)" }}>
+                            <td colSpan={6} style={{ fontWeight: 700, textAlign: "right", color: "var(--accent-purple)" }}>
+                              TOTAL (Close All Together):
+                            </td>
+                            <td className={totalPnL >= 0 ? "positive" : "negative"} style={{ fontWeight: 800, fontSize: 14 }}>
+                              {fmt.sign(totalPnL)}
+                            </td>
+                            <td></td>
+                          </tr>
+                        </tbody>
+                      </table>
+
+                      {/* How to close the whole strategy */}
+                      <div className="strategy-close-how-panel">
+                        <div className="strategy-close-how-title">
+                          <span>🔧</span> How to Close the Entire {strat.name} in IBKR TWS
+                        </div>
+                        {strat.legs.map((l, li) => {
+                          const lt = l.contract.type;
+                          const isOpt = lt === "call" || lt === "put";
+                          const lCloseAction = l.quantity < 0 ? "BUY" : "SELL";
+                          const mult = l.contract.multiplier || 100;
+                          const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
+                          const lSym = l.contract.symbol || l.contract.underlying || "?";
+                          const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
+                          return (
+                            <div key={li} style={{ marginBottom: li < strat.legs.length - 1 ? 8 : 0 }}>
+                              <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
+                                <span style={{ fontWeight: 800, color: lCloseAction === "BUY" ? "var(--accent-red)" : "var(--accent-green)", minWidth: 36 }}>
+                                  {lCloseAction}
+                                </span>
+                                <span style={{ fontWeight: 600 }}>
+                                  {Math.abs(l.quantity)} × {lSym} {isOpt ? lt.toUpperCase() : "STOCK"}
+                                  {l.contract.strike ? ` $${l.contract.strike}` : ""}
+                                  {lExp ? ` ${lExp.toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}
+                                </span>
+                                <span style={{ color: "var(--text-muted)" }}>@ ~{fmt.usd(lCurrPerShare)}/sh LMT</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                          💡 In TWS you can close all legs at once: select the strategy → Right-click → Close Position → it will create a combo order.
+                        </div>
+                      </div>
+
+                      {/* Copy all button */}
+                      <button className="manual-copy-btn" style={{ padding: "8px 14px", fontSize: 12 }} onClick={(e) => {
+                        e.stopPropagation();
+                        const lines = [`Strategy: ${strat.name} — ${strat.underlying}`, ""];
+                        strat.legs.forEach((l, li) => {
+                          const lt = l.contract.type;
+                          const isOpt = lt === "call" || lt === "put";
+                          const lCloseAction = l.quantity < 0 ? "BUY" : "SELL";
+                          const mult = l.contract.multiplier || 100;
+                          const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
+                          const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
+                          const expIBKR = lExp ? `${lExp.getFullYear()}${String(lExp.getMonth()+1).padStart(2,"0")}${String(lExp.getDate()).padStart(2,"0")}` : "—";
+                          lines.push(`Leg ${li + 1}: ${lCloseAction} ${Math.abs(l.quantity)} ${l.contract.underlying || l.contract.symbol} ${isOpt ? lt.toUpperCase() : "STOCK"} ${l.contract.strike ? `$${l.contract.strike}` : ""} Exp: ${expIBKR} @ ~$${lCurrPerShare.toFixed(2)}/sh`);
+                        });
+                        lines.push("", `Net P&L if closed: ${totalPnL >= 0 ? "+" : ""}$${totalPnL.toFixed(2)}`);
+                        navigator.clipboard.writeText(lines.join("\n"));
+                      }}>
+                        📋 Copy Close Instructions
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
+          );
+        })}
+
+        {/* ── Individual position rows ── */}
         {positions.map((p, i) => {
           const sym = p.contract.symbol || p.contract.underlying || "?";
           const type = p.contract.type;
@@ -909,9 +1388,19 @@ function PositionsTable({ positions }) {
                 </td>
                 <td><span className={`badge ${badgeClass}`}>{type}</span>
                   {p.contract.strike ? ` $${p.contract.strike}` : ""}
-                  {p.contract.expiration ? <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 4 }}>
-                    {new Date(p.contract.expiration).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                  </span> : ""}
+                </td>
+                <td>
+                  {isOption && expDate ? (
+                    <span className={`exp-badge ${daysToExp <= 7 ? "exp-danger" : daysToExp <= 21 ? "exp-warning" : "exp-safe"}`}>
+                      {expDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                      <span style={{ marginLeft: 4, opacity: 0.8 }}>({daysToExp}d)</span>
+                    </span>
+                  ) : type === "stock" ? "—" : "—"}
+                  {usedIndices.has(i) && (
+                    <span style={{ marginLeft: 6, fontSize: 9, color: "var(--accent-purple)", fontWeight: 700 }}>
+                      📎 Strategy
+                    </span>
+                  )}
                 </td>
                 <td style={{ color: p.quantity >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
                   {p.quantity > 0 ? "+" : ""}{p.quantity}
@@ -936,7 +1425,7 @@ function PositionsTable({ positions }) {
               {/* ── Expanded close panel for options ──── */}
               {isExpanded && isOption && (
                 <tr>
-                  <td colSpan={9} style={{ padding: 0 }}>
+                  <td colSpan={10} style={{ padding: 0 }}>
                     <div className="pos-close-panel">
 
                       {/* ══ BIG VERDICT BANNER ══ */}
