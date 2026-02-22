@@ -859,6 +859,30 @@ async function apiRawFetch(endpoint, opts) {
   return res.json();
 }
 
+// ── Human-readable position name formatting ──
+const MONTH_SHORT = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function formatPositionName(p) {
+  const type = p.contract.type;
+  const underlying = p.contract.underlying || p.contract.symbol || "?";
+  const isOption = type === "call" || type === "put";
+  if (!isOption) return underlying;
+  const strike = p.contract.strike ? `$${p.contract.strike}` : "";
+  const exp = p.contract.expiration ? new Date(p.contract.expiration) : null;
+  const expStr = exp ? `${MONTH_SHORT[exp.getMonth()]} ${exp.getDate()}` : "";
+  const side = p.quantity < 0 ? "Short" : "Long";
+  return `${underlying} ${side} ${type === "call" ? "Call" : "Put"} ${strike} ${expStr}`.trim();
+}
+
+// ── Submit close order to server ──
+async function submitCloseOrder(legs) {
+  const res = await fetch(API + "/close", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ legs }),
+  });
+  return res.json();
+}
+
 // ═══════════════════════════════════════════════════════════
 //  COMPONENTS
 // ═══════════════════════════════════════════════════════════
@@ -905,6 +929,35 @@ function PositionsTable({ positions }) {
   const [expandedPos, setExpandedPos] = useState(null);
   const [showCloseManual, setShowCloseManual] = useState(null);
   const [expandedStrategy, setExpandedStrategy] = useState(null);
+  const [closeStatus, setCloseStatus] = useState({}); // { [key]: "confirming"|"submitting"|"success"|"error" }
+  const [closeMessage, setCloseMessage] = useState({}); // { [key]: string }
+
+  const handleClose = async (key, legs) => {
+    if (closeStatus[key] !== "confirming") {
+      setCloseStatus(prev => ({ ...prev, [key]: "confirming" }));
+      setCloseMessage(prev => ({ ...prev, [key]: "" }));
+      return;
+    }
+    setCloseStatus(prev => ({ ...prev, [key]: "submitting" }));
+    try {
+      const result = await submitCloseOrder(legs);
+      if (result.success) {
+        setCloseStatus(prev => ({ ...prev, [key]: "success" }));
+        setCloseMessage(prev => ({ ...prev, [key]: result.message || "Order submitted!" }));
+      } else {
+        setCloseStatus(prev => ({ ...prev, [key]: "error" }));
+        setCloseMessage(prev => ({ ...prev, [key]: result.error || "Failed to submit" }));
+      }
+    } catch (err) {
+      setCloseStatus(prev => ({ ...prev, [key]: "error" }));
+      setCloseMessage(prev => ({ ...prev, [key]: String(err) }));
+    }
+  };
+
+  const cancelClose = (key) => {
+    setCloseStatus(prev => ({ ...prev, [key]: null }));
+    setCloseMessage(prev => ({ ...prev, [key]: "" }));
+  };
 
   if (!positions?.length) return <div className="loading">No positions loaded</div>;
 
@@ -1098,6 +1151,13 @@ function PositionsTable({ positions }) {
                   <div className="strategy-group-label">
                     <span className="strategy-group-badge">{strat.icon} {strat.name}</span>
                     <span style={{ fontWeight: 600 }}>{strat.underlying}</span>
+                    {(() => {
+                      const strikes = strat.legs
+                        .filter(l => l.contract.type === "call" || l.contract.type === "put")
+                        .map(l => `$${l.contract.strike}`)
+                        .join("/");
+                      return strikes ? <span style={{ fontSize: 11, color: "var(--text-secondary)" }}>{strikes}</span> : null;
+                    })()}
                     <span style={{ fontSize: 10, color: "var(--text-muted)" }}>{isExpanded ? "▲" : "▼"}</span>
                   </div>
                 </td>
@@ -1250,7 +1310,9 @@ function PositionsTable({ positions }) {
                                 <td className={lPnl >= 0 ? "positive" : "negative"} style={{ fontWeight: 600 }}>
                                   {fmt.sign(lPnl)}
                                 </td>
-                                <td style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{lCloseAction}</td>
+                                <td>
+                                  <span style={{ fontWeight: 600, color: "var(--accent-cyan)" }}>{lCloseAction}</span>
+                                </td>
                               </tr>
                             );
                           })}
@@ -1300,25 +1362,105 @@ function PositionsTable({ positions }) {
                         </div>
                       </div>
 
-                      {/* Copy all button */}
-                      <button className="manual-copy-btn" style={{ padding: "8px 14px", fontSize: 12 }} onClick={(e) => {
-                        e.stopPropagation();
-                        const lines = [`Strategy: ${strat.name} — ${strat.underlying}`, ""];
-                        strat.legs.forEach((l, li) => {
-                          const lt = l.contract.type;
-                          const isOpt = lt === "call" || lt === "put";
-                          const lCloseAction = l.quantity < 0 ? "BUY" : "SELL";
-                          const mult = l.contract.multiplier || 100;
-                          const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
-                          const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
-                          const expIBKR = lExp ? `${lExp.getFullYear()}${String(lExp.getMonth()+1).padStart(2,"0")}${String(lExp.getDate()).padStart(2,"0")}` : "—";
-                          lines.push(`Leg ${li + 1}: ${lCloseAction} ${Math.abs(l.quantity)} ${l.contract.underlying || l.contract.symbol} ${isOpt ? lt.toUpperCase() : "STOCK"} ${l.contract.strike ? `$${l.contract.strike}` : ""} Exp: ${expIBKR} @ ~$${lCurrPerShare.toFixed(2)}/sh`);
-                        });
-                        lines.push("", `Net P&L if closed: ${totalPnL >= 0 ? "+" : ""}$${totalPnL.toFixed(2)}`);
-                        navigator.clipboard.writeText(lines.join("\n"));
-                      }}>
-                        📋 Copy Close Instructions
-                      </button>
+                      {/* Action buttons: Copy + Auto-Execute */}
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                        <button className="manual-copy-btn" style={{ padding: "8px 14px", fontSize: 12 }} onClick={(e) => {
+                          e.stopPropagation();
+                          const lines = [`Strategy: ${strat.name} — ${strat.underlying}`, ""];
+                          strat.legs.forEach((l, li) => {
+                            const lt = l.contract.type;
+                            const isOpt = lt === "call" || lt === "put";
+                            const lCloseAction = l.quantity < 0 ? "BUY" : "SELL";
+                            const mult = l.contract.multiplier || 100;
+                            const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
+                            const lExp = l.contract.expiration ? new Date(l.contract.expiration) : null;
+                            const expIBKR = lExp ? `${lExp.getFullYear()}${String(lExp.getMonth()+1).padStart(2,"0")}${String(lExp.getDate()).padStart(2,"0")}` : "—";
+                            lines.push(`Leg ${li + 1}: ${lCloseAction} ${Math.abs(l.quantity)} ${l.contract.underlying || l.contract.symbol} ${isOpt ? lt.toUpperCase() : "STOCK"} ${l.contract.strike ? `$${l.contract.strike}` : ""} Exp: ${expIBKR} @ ~$${lCurrPerShare.toFixed(2)}/sh`);
+                          });
+                          lines.push("", `Net P&L if closed: ${totalPnL >= 0 ? "+" : ""}$${totalPnL.toFixed(2)}`);
+                          navigator.clipboard.writeText(lines.join("\n"));
+                        }}>
+                          📋 Copy Close Instructions
+                        </button>
+
+                        {/* ── Auto-execute close strategy button ── */}
+                        {(() => {
+                          const closeKey = `strat-${si}`;
+                          const status = closeStatus[closeKey];
+                          const msg = closeMessage[closeKey];
+                          const closingLegs = strat.legs.map(l => {
+                            const lt = l.contract.type;
+                            const isOpt = lt === "call" || lt === "put";
+                            const mult = l.contract.multiplier || 100;
+                            const lCurrPerShare = l.marketValue ? Math.abs(l.marketValue) / (Math.abs(l.quantity) * (isOpt ? mult : 1)) : 0;
+                            return {
+                              symbol: l.contract.underlying || l.contract.symbol,
+                              type: lt,
+                              strike: l.contract.strike,
+                              expiration: l.contract.expiration,
+                              side: l.quantity < 0 ? "buy" : "sell",
+                              quantity: Math.abs(l.quantity),
+                              price: roundTick(lCurrPerShare, l.contract.underlying || l.contract.symbol),
+                              exchange: l.contract.exchange || "SMART",
+                            };
+                          });
+
+                          if (status === "success") {
+                            return (
+                              <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>
+                                ✅ {msg}
+                              </span>
+                            );
+                          }
+                          if (status === "error") {
+                            return (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-red)", fontSize: 12 }}>❌ {msg}</span>
+                                <button className="manual-copy-btn" style={{ padding: "6px 10px", fontSize: 11, background: "rgba(239,68,68,0.15)", color: "var(--accent-red)" }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>
+                                  Dismiss
+                                </button>
+                              </div>
+                            );
+                          }
+                          if (status === "submitting") {
+                            return (
+                              <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>
+                                ⏳ Submitting to IBKR...
+                              </span>
+                            );
+                          }
+                          if (status === "confirming") {
+                            return (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
+                                  ⚠️ Close {strat.legs.length} legs via IBKR?
+                                </span>
+                                <button style={{
+                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
+                                  background: "var(--accent-green)", color: "#000", border: "none",
+                                  borderRadius: 6, cursor: "pointer",
+                                }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
+                                  ✓ Confirm
+                                </button>
+                                <button className="manual-copy-btn" style={{ padding: "6px 10px", fontSize: 11 }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>
+                                  Cancel
+                                </button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <button style={{
+                              padding: "8px 14px", fontSize: 12, fontWeight: 700,
+                              background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
+                              border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
+                            }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
+                              ⚡ Execute Close via IBKR
+                            </button>
+                          );
+                        })()}
+                      </div>
                     </div>
                   </td>
                 </tr>
@@ -1391,18 +1533,31 @@ function PositionsTable({ positions }) {
               <tr className={`${isOption ? "pos-row-clickable" : ""} ${isExpanded ? "pos-row-expanded" : ""}`}
                 onClick={() => isOption && setExpandedPos(isExpanded ? null : i)}>
                 <td style={{ fontWeight: 600 }}>
-                  {sym}
-                  {isOption && <span style={{ marginLeft: 4, fontSize: 10, color: "var(--text-muted)" }}>{isExpanded ? "▲" : "▼"}</span>}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                    <span>{formatPositionName(p)}</span>
+                    {isOption && (
+                      <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "monospace" }}>
+                        {sym} {isExpanded ? "▲" : "▼"}
+                      </span>
+                    )}
+                  </div>
                 </td>
                 <td><span className={`badge ${badgeClass}`}>{type}</span>
                   {p.contract.strike ? ` $${p.contract.strike}` : ""}
                 </td>
                 <td>
                   {isOption && expDate ? (
-                    <span className={`exp-badge ${daysToExp <= 7 ? "exp-danger" : daysToExp <= 21 ? "exp-warning" : "exp-safe"}`}>
-                      {expDate.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                      <span style={{ marginLeft: 4, opacity: 0.8 }}>({daysToExp}d)</span>
-                    </span>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                      <span className={`exp-badge ${daysToExp <= 7 ? "exp-danger" : daysToExp <= 21 ? "exp-warning" : "exp-safe"}`}>
+                        {expDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" })}
+                      </span>
+                      <span style={{
+                        fontSize: 12, fontWeight: 700,
+                        color: daysToExp <= 7 ? "var(--accent-red)" : daysToExp <= 21 ? "var(--accent-amber)" : "var(--accent-green)",
+                      }}>
+                        {daysToExp}d left
+                      </span>
+                    </div>
                   ) : type === "stock" ? "—" : "—"}
                   {usedIndices.has(i) && (
                     <span style={{ marginLeft: 6, fontSize: 9, color: "var(--accent-purple)", fontWeight: 700 }}>
@@ -1647,7 +1802,24 @@ function PositionsTable({ positions }) {
                               <span style={{ fontSize: 16 }}>🔄</span>
                               What Can You Do? — Recovery Options
                             </div>
-                            {recoveryOptions.map((opt, oi) => (
+                            {recoveryOptions.map((opt, oi) => {
+                              const recCloseKey = `rec-${i}-${oi}`;
+                              const recStatus = closeStatus[recCloseKey];
+                              const recMsg = closeMessage[recCloseKey];
+                              // Only "Close & Accept Loss" has a direct auto-execute action
+                              const isCloseAction = opt.name === "Close & Accept Loss";
+                              const closingLegs = isCloseAction ? [{
+                                symbol: underlying,
+                                type: type,
+                                strike: p.contract.strike,
+                                expiration: p.contract.expiration,
+                                side: p.quantity < 0 ? "buy" : "sell",
+                                quantity: Math.abs(p.quantity),
+                                price: roundTick(currentPerShare, underlying),
+                                exchange: p.contract.exchange || "SMART",
+                              }] : null;
+
+                              return (
                               <div key={oi} className="pos-recovery-option" style={{
                                 borderLeftColor: opt.canProfit ? "var(--accent-green)" : "var(--accent-amber)",
                               }}>
@@ -1671,14 +1843,70 @@ function PositionsTable({ positions }) {
                                     </div>
                                   ))}
                                 </div>
+
+                                {/* ── Auto-execute button for this recovery option ── */}
+                                {isCloseAction && closingLegs && (
+                                  <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(30,41,59,0.5)" }}>
+                                    {recStatus === "success" ? (
+                                      <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {recMsg}</span>
+                                    ) : recStatus === "error" ? (
+                                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                        <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {recMsg}</span>
+                                        <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                          onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Dismiss</button>
+                                      </div>
+                                    ) : recStatus === "submitting" ? (
+                                      <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting close order...</span>
+                                    ) : recStatus === "confirming" ? (
+                                      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                        <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
+                                          ⚠️ Close {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} via IBKR?
+                                        </span>
+                                        <button style={{
+                                          padding: "6px 14px", fontSize: 12, fontWeight: 700,
+                                          background: "var(--accent-green)", color: "#000", border: "none",
+                                          borderRadius: 6, cursor: "pointer",
+                                        }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
+                                          ✓ Confirm Close
+                                        </button>
+                                        <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                          onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Cancel</button>
+                                      </div>
+                                    ) : (
+                                      <button style={{
+                                        padding: "8px 16px", fontSize: 12, fontWeight: 700,
+                                        background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
+                                        border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
+                                        width: "100%",
+                                      }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
+                                        ⚡ Execute: {closeVerb} {Math.abs(p.quantity)}x @ {fmt.usd(roundTick(currentPerShare, underlying))}/sh via IBKR
+                                      </button>
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                            ))}
+                              );
+                            })}
                           </div>
                         );
                       })()}
 
                       {/* ── Profit position advice ── */}
-                      {pnl > 0 && (
+                      {pnl > 0 && (() => {
+                        const profitCloseKey = `profit-${i}`;
+                        const profitStatus = closeStatus[profitCloseKey];
+                        const profitMsg = closeMessage[profitCloseKey];
+                        const profitClosingLegs = [{
+                          symbol: p.contract.underlying || sym.replace(/\d.*/,"") || sym,
+                          type: type,
+                          strike: p.contract.strike,
+                          expiration: p.contract.expiration,
+                          side: p.quantity < 0 ? "buy" : "sell",
+                          quantity: Math.abs(p.quantity),
+                          price: roundTick(currentPerShare, p.contract.underlying || sym),
+                          exchange: p.contract.exchange || "SMART",
+                        }];
+                        return (
                         <div className="pos-close-recommendation pos-rec-profit" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
                           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                             <span style={{ fontSize: 16 }}>💰</span>
@@ -1704,8 +1932,47 @@ function PositionsTable({ positions }) {
                               </>
                             )}
                           </div>
+                          {/* ── Auto-execute close for profit ── */}
+                          <div style={{ marginTop: 4, width: "100%" }}>
+                            {profitStatus === "success" ? (
+                              <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {profitMsg}</span>
+                            ) : profitStatus === "error" ? (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {profitMsg}</span>
+                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(profitCloseKey); }}>Dismiss</button>
+                              </div>
+                            ) : profitStatus === "submitting" ? (
+                              <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting close order...</span>
+                            ) : profitStatus === "confirming" ? (
+                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
+                                  ⚠️ {closeVerb} {Math.abs(p.quantity)}x and lock in {fmt.usd(pnl)} profit?
+                                </span>
+                                <button style={{
+                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
+                                  background: "var(--accent-green)", color: "#000", border: "none",
+                                  borderRadius: 6, cursor: "pointer",
+                                }} onClick={(e) => { e.stopPropagation(); handleClose(profitCloseKey, profitClosingLegs); }}>
+                                  ✓ Close & Lock Profit
+                                </button>
+                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(profitCloseKey); }}>Cancel</button>
+                              </div>
+                            ) : (
+                              <button style={{
+                                padding: "10px 18px", fontSize: 13, fontWeight: 700,
+                                background: "rgba(16,185,129,0.2)", color: "var(--accent-green)",
+                                border: "1px solid rgba(16,185,129,0.4)", borderRadius: 8, cursor: "pointer",
+                                width: "100%",
+                              }} onClick={(e) => { e.stopPropagation(); handleClose(profitCloseKey, profitClosingLegs); }}>
+                                ⚡ {closeVerb} Now — Lock in {fmt.usd(pnl)} Profit via IBKR
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      )}
+                        );
+                      })()}
 
                       {/* ── How to close ── */}
                       <div className="pos-close-how">
@@ -1749,8 +2016,8 @@ function PositionsTable({ positions }) {
                         </div>
                       </div>
 
-                      {/* Manual entry button + copy */}
-                      <div className="pos-close-actions">
+                      {/* Action buttons: manual details + copy + auto-execute */}
+                      <div className="pos-close-actions" style={{ flexWrap: "wrap" }}>
                         <button className="btn-manual" onClick={(e) => {
                           e.stopPropagation();
                           setShowCloseManual(showCloseManual === i ? null : i);
@@ -1781,6 +2048,66 @@ function PositionsTable({ positions }) {
                         }}>
                           Copy All
                         </button>
+
+                        {/* ── Auto-execute close button ── */}
+                        {(() => {
+                          const closeKey = `pos-${i}`;
+                          const status = closeStatus[closeKey];
+                          const msg = closeMessage[closeKey];
+                          const closingLegs = [{
+                            symbol: p.contract.underlying || sym.replace(/\d.*/,"") || sym,
+                            type: type,
+                            strike: p.contract.strike,
+                            expiration: p.contract.expiration,
+                            side: p.quantity < 0 ? "buy" : "sell",
+                            quantity: Math.abs(p.quantity),
+                            price: roundTick(currentPerShare, p.contract.underlying || sym),
+                            exchange: p.contract.exchange || "SMART",
+                          }];
+
+                          if (status === "success") {
+                            return <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {msg}</span>;
+                          }
+                          if (status === "error") {
+                            return (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {msg}</span>
+                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>Dismiss</button>
+                              </div>
+                            );
+                          }
+                          if (status === "submitting") {
+                            return <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting...</span>;
+                          }
+                          if (status === "confirming") {
+                            return (
+                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
+                                  ⚠️ {closeVerb} {Math.abs(p.quantity)}x via IBKR?
+                                </span>
+                                <button style={{
+                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
+                                  background: "var(--accent-green)", color: "#000", border: "none",
+                                  borderRadius: 6, cursor: "pointer",
+                                }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
+                                  ✓ Confirm
+                                </button>
+                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
+                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>Cancel</button>
+                              </div>
+                            );
+                          }
+                          return (
+                            <button style={{
+                              padding: "8px 14px", fontSize: 12, fontWeight: 700,
+                              background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
+                              border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
+                            }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
+                              ⚡ {closeVerb} via IBKR
+                            </button>
+                          );
+                        })()}
                       </div>
 
                       {/* Full manual details */}

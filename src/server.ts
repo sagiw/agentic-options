@@ -461,6 +461,114 @@ app.post("/api/approve/:id", async (req, res) => {
 });
 
 /**
+ * POST /api/close — Close existing position(s) via IBKR.
+ *
+ * Body: {
+ *   legs: [{
+ *     symbol: string,       // underlying symbol (e.g. "AAPL")
+ *     type: "call"|"put"|"stock",
+ *     strike?: number,
+ *     expiration?: string,  // ISO date string or YYYYMMDD
+ *     side: "buy"|"sell",   // closing side
+ *     quantity: number,
+ *     price: number,        // limit price per share
+ *     exchange?: string,
+ *   }]
+ * }
+ */
+app.post("/api/close", async (req, res) => {
+  try {
+    const { legs } = req.body;
+
+    if (!legs || !Array.isArray(legs) || legs.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Request must include a 'legs' array with at least one leg",
+      });
+    }
+
+    if (!ibkr.isConnected) {
+      return res.status(400).json({
+        success: false,
+        error: "IBKR not connected — cannot submit close order",
+      });
+    }
+
+    if (!ibkr.hasValidOrderId) {
+      return res.status(400).json({
+        success: false,
+        error: "IBKR not ready — no valid order ID. Try again in a moment.",
+      });
+    }
+
+    log.info(`Close request: ${legs.length} leg(s)`);
+
+    // Build an OptionsStrategy from the close legs
+    const closingStrategy = {
+      name: `Close Position`,
+      type: "custom" as any,
+      legs: legs.map((l: any) => ({
+        contract: {
+          symbol: l.symbol,
+          underlying: l.symbol,
+          type: l.type,
+          style: "american" as const,
+          strike: l.strike || 0,
+          expiration: l.expiration ? new Date(l.expiration) : new Date(),
+          multiplier: 100,
+          exchange: l.exchange || "SMART",
+        },
+        side: l.side as "buy" | "sell",
+        quantity: l.quantity,
+        price: l.price || 0,
+      })),
+      netDebit: 0,
+      maxLoss: 0,
+      maxProfit: 0,
+      breakEven: 0,
+      requiredCapital: 0,
+      expiration: new Date(),
+    };
+
+    const submitResult = await submitStrategy(ibkr, closingStrategy as any);
+
+    // Track as close order
+    const trackedOrder: TrackedOrder = {
+      id: nextLocalOrderId++,
+      strategyId: -1,
+      strategyName: `Close: ${legs.map((l: any) => `${l.side.toUpperCase()} ${l.quantity}x ${l.symbol} ${l.type?.toUpperCase() || ""} $${l.strike || ""}`).join(" + ")}`,
+      symbol: legs[0]?.symbol ?? "???",
+      type: "close" as any,
+      legs: legs.length,
+      ibkrOrderIds: submitResult.orderIds,
+      status: submitResult.success ? "submitted" : "error",
+      riskPct: 0,
+      requiredCapital: 0,
+      expiration: null,
+      submittedAt: new Date().toISOString(),
+      message: submitResult.message,
+      errorDetails: [],
+    };
+    trackedOrders.push(trackedOrder);
+
+    log.info(
+      `Close order #${trackedOrder.id}: ${trackedOrder.status} ` +
+      `(IBKR IDs: ${submitResult.orderIds.join(", ") || "none"}) — ${submitResult.message}`
+    );
+
+    res.json({
+      success: submitResult.success,
+      message: submitResult.message,
+      orderId: trackedOrder.id,
+      ibkrOrderIds: submitResult.orderIds,
+    });
+  } catch (err) {
+    log.error(`Close order failed: ${err}`);
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
  * GET /api/status — System health check
  */
 app.get("/api/status", (_req, res) => {
