@@ -604,6 +604,74 @@
       background: rgba(59,130,246,0.06); border-radius: 6px;
       display: flex; justify-content: space-between; align-items: center;
     }
+    /* Position close panel */
+    .pos-row-clickable { cursor: pointer; }
+    .pos-row-clickable:hover td { background: rgba(139,92,246,0.04) !important; }
+    .pos-row-expanded td { background: rgba(139,92,246,0.03) !important; border-bottom: none !important; }
+    .pos-close-panel {
+      background: rgba(0,0,0,0.12); border: 1px solid var(--border);
+      border-radius: 0 0 10px 10px; padding: 16px; margin: 0 0 8px 0;
+    }
+    .pos-close-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 12px;
+    }
+    .pos-close-title {
+      font-size: 13px; font-weight: 700; display: flex; align-items: center; gap: 8px;
+    }
+    .pos-close-pnl-badge {
+      padding: 4px 12px; border-radius: 8px; font-size: 14px; font-weight: 800;
+    }
+    .pos-close-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+      margin-bottom: 14px;
+    }
+    .pos-close-stat { text-align: center; }
+    .pos-close-stat-value { font-size: 18px; font-weight: 700; }
+    .pos-close-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 2px; }
+    .pos-close-how {
+      background: rgba(0,0,0,0.15); border-radius: 8px; padding: 14px;
+      margin-bottom: 12px;
+    }
+    .pos-close-how-title {
+      font-size: 12px; font-weight: 700; color: var(--accent-cyan);
+      margin-bottom: 8px; display: flex; align-items: center; gap: 6px;
+    }
+    .pos-close-step {
+      display: flex; gap: 10px; padding: 6px 0;
+      border-bottom: 1px solid rgba(30,41,59,0.3); font-size: 12px;
+    }
+    .pos-close-step:last-child { border-bottom: none; }
+    .pos-close-step-num {
+      width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 800;
+      background: rgba(6,182,212,0.15); color: var(--accent-cyan);
+    }
+    .pos-close-actions {
+      display: flex; gap: 10px; align-items: center; margin-top: 4px;
+    }
+    .pos-close-note {
+      font-size: 11px; color: var(--text-muted); line-height: 1.5;
+      padding: 10px; background: rgba(245,158,11,0.06);
+      border: 1px solid rgba(245,158,11,0.15); border-radius: 8px;
+    }
+    .pos-close-recommendation {
+      display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+      border-radius: 8px; font-size: 12px; font-weight: 600; margin-bottom: 12px;
+    }
+    .pos-rec-profit {
+      background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.25);
+      color: var(--accent-green);
+    }
+    .pos-rec-loss {
+      background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.25);
+      color: var(--accent-red);
+    }
+    .pos-rec-neutral {
+      background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25);
+      color: var(--accent-amber);
+    }
     /* Responsive */
     @media (max-width: 1024px) {
       .metrics-grid { grid-template-columns: repeat(3, 1fr); }
@@ -700,6 +768,9 @@ function GreeksDisplay({ greeks }) {
 }
 
 function PositionsTable({ positions }) {
+  const [expandedPos, setExpandedPos] = useState(null);
+  const [showCloseManual, setShowCloseManual] = useState(null);
+
   if (!positions?.length) return <div className="loading">No positions loaded</div>;
   return (
     <table className="table">
@@ -716,39 +787,267 @@ function PositionsTable({ positions }) {
           const isOption = type === "call" || type === "put";
           const badgeClass = type === "call" ? "badge-call" : type === "put" ? "badge-put" : "badge-stock";
           const mult = p.contract.multiplier || 100;
-          // IBKR avgCost for options is already per-contract (price × multiplier)
-          // so total premium = |qty| × avgCost — don't multiply by mult again
           const totalPremium = isOption ? Math.abs(p.quantity) * p.averageCost : null;
           const perShareCost = isOption ? p.averageCost / mult : p.averageCost;
           const isSold = p.quantity < 0;
+          const isBought = p.quantity > 0;
+          const isExpanded = expandedPos === i;
+
+          // ── Close analysis for options ──
+          const pnl = p.unrealizedPnL || 0;
+          const pnlPct = totalPremium && totalPremium > 0 ? (pnl / totalPremium * 100) : 0;
+          const closeAction = isSold ? "BUY" : "SELL";
+          const closeVerb = isSold ? "Buy to Close" : "Sell to Close";
+          const currentPerShare = p.marketValue ? Math.abs(p.marketValue) / (Math.abs(p.quantity) * mult) : 0;
+
+          // Expiration analysis
+          const expDate = p.contract.expiration ? new Date(p.contract.expiration) : null;
+          const daysToExp = expDate ? Math.ceil((expDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24)) : null;
+
+          // Recommendation logic
+          let recType = "neutral";
+          let recIcon = "⚖️";
+          let recText = "";
+          if (isOption) {
+            if (isSold && pnl > 0) {
+              // Short option at profit
+              const profitPct = totalPremium > 0 ? (pnl / totalPremium * 100) : 0;
+              if (profitPct >= 50 || (daysToExp != null && daysToExp <= 7)) {
+                recType = "profit"; recIcon = "✅";
+                recText = profitPct >= 50
+                  ? `Profit at ${profitPct.toFixed(0)}% of max — consider closing to lock in gains`
+                  : `Only ${daysToExp}d to expiration — close to avoid gamma risk`;
+              } else {
+                recType = "neutral"; recIcon = "⏳";
+                recText = `Profit at ${profitPct.toFixed(0)}% — common to close at 50%+ of max profit`;
+              }
+            } else if (isSold && pnl < 0) {
+              recType = "loss"; recIcon = "⚠️";
+              recText = `Position at a loss — evaluate if the thesis still holds or cut losses`;
+            } else if (isBought && pnl > 0) {
+              recType = "profit"; recIcon = "✅";
+              recText = `In profit — consider taking gains before time decay accelerates`;
+              if (daysToExp != null && daysToExp <= 14) {
+                recText += ` (${daysToExp}d left — theta accelerating)`;
+              }
+            } else if (isBought && pnl < 0) {
+              const lossPct = totalPremium > 0 ? (Math.abs(pnl) / totalPremium * 100) : 0;
+              recType = "loss"; recIcon = "⚠️";
+              recText = lossPct > 50
+                ? `Down ${lossPct.toFixed(0)}% — consider closing to preserve remaining value`
+                : `Down ${lossPct.toFixed(0)}% — may recover if thesis intact`;
+            }
+          }
+
           return (
-            <tr key={i}>
-              <td style={{ fontWeight: 600 }}>{sym}</td>
-              <td><span className={`badge ${badgeClass}`}>{type}</span>
-                {p.contract.strike ? ` $${p.contract.strike}` : ""}
-                {p.contract.expiration ? <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 4 }}>
-                  {new Date(p.contract.expiration).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
-                </span> : ""}
-              </td>
-              <td style={{ color: p.quantity >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
-                {p.quantity > 0 ? "+" : ""}{p.quantity}
-              </td>
-              <td>{isOption ? fmt.usd(perShareCost) + "/sh" : fmt.usd(p.averageCost)}</td>
-              <td>{isOption ? (
-                <span style={{
-                  color: isSold ? "var(--accent-green)" : "var(--accent-amber)",
-                  fontWeight: 600
-                }}>
-                  {isSold ? "Rcvd " : "Paid "}{fmt.usd(totalPremium)}
-                </span>
-              ) : "—"}</td>
-              <td>{fmt.usd(p.marketValue)}</td>
-              <td className={p.unrealizedPnL >= 0 ? "positive" : "negative"}>
-                {fmt.sign(p.unrealizedPnL)}
-              </td>
-              <td>{p.greeks ? fmt.num(p.greeks.delta, 3) : "—"}</td>
-              <td>{p.greeks ? fmt.sign(p.greeks.theta) : "—"}</td>
-            </tr>
+            <React.Fragment key={i}>
+              <tr className={`${isOption ? "pos-row-clickable" : ""} ${isExpanded ? "pos-row-expanded" : ""}`}
+                onClick={() => isOption && setExpandedPos(isExpanded ? null : i)}>
+                <td style={{ fontWeight: 600 }}>
+                  {sym}
+                  {isOption && <span style={{ marginLeft: 4, fontSize: 10, color: "var(--text-muted)" }}>{isExpanded ? "▲" : "▼"}</span>}
+                </td>
+                <td><span className={`badge ${badgeClass}`}>{type}</span>
+                  {p.contract.strike ? ` $${p.contract.strike}` : ""}
+                  {p.contract.expiration ? <span style={{ color: "var(--text-muted)", fontSize: 10, marginLeft: 4 }}>
+                    {new Date(p.contract.expiration).toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                  </span> : ""}
+                </td>
+                <td style={{ color: p.quantity >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                  {p.quantity > 0 ? "+" : ""}{p.quantity}
+                </td>
+                <td>{isOption ? fmt.usd(perShareCost) + "/sh" : fmt.usd(p.averageCost)}</td>
+                <td>{isOption ? (
+                  <span style={{
+                    color: isSold ? "var(--accent-green)" : "var(--accent-amber)",
+                    fontWeight: 600
+                  }}>
+                    {isSold ? "Rcvd " : "Paid "}{fmt.usd(totalPremium)}
+                  </span>
+                ) : "—"}</td>
+                <td>{fmt.usd(p.marketValue)}</td>
+                <td className={p.unrealizedPnL >= 0 ? "positive" : "negative"}>
+                  {fmt.sign(p.unrealizedPnL)}
+                </td>
+                <td>{p.greeks ? fmt.num(p.greeks.delta, 3) : "—"}</td>
+                <td>{p.greeks ? fmt.sign(p.greeks.theta) : "—"}</td>
+              </tr>
+
+              {/* ── Expanded close panel for options ──── */}
+              {isExpanded && isOption && (
+                <tr>
+                  <td colSpan={9} style={{ padding: 0 }}>
+                    <div className="pos-close-panel">
+                      {/* Header with P&L badge */}
+                      <div className="pos-close-header">
+                        <div className="pos-close-title">
+                          <span style={{ fontSize: 16 }}>{pnl >= 0 ? "📈" : "📉"}</span>
+                          Close Position: {closeVerb} {Math.abs(p.quantity)}x {sym} {type.toUpperCase()} ${p.contract.strike}
+                        </div>
+                        <div className="pos-close-pnl-badge" style={{
+                          background: pnl >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                          color: pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                        }}>
+                          {pnl >= 0 ? "+" : ""}{fmt.usd(pnl)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
+                        </div>
+                      </div>
+
+                      {/* Recommendation */}
+                      {recText && (
+                        <div className={`pos-close-recommendation pos-rec-${recType}`}>
+                          <span style={{ fontSize: 16 }}>{recIcon}</span>
+                          {recText}
+                        </div>
+                      )}
+
+                      {/* Stats grid */}
+                      <div className="pos-close-grid">
+                        <div className="pos-close-stat">
+                          <div className="pos-close-stat-value" style={{ color: "var(--accent-cyan)" }}>
+                            {fmt.usd(perShareCost)}/sh
+                          </div>
+                          <div className="pos-close-stat-label">{isSold ? "Sold At" : "Bought At"}</div>
+                        </div>
+                        <div className="pos-close-stat">
+                          <div className="pos-close-stat-value" style={{ color: "var(--accent-blue)" }}>
+                            {fmt.usd(currentPerShare)}/sh
+                          </div>
+                          <div className="pos-close-stat-label">Current Price</div>
+                        </div>
+                        <div className="pos-close-stat">
+                          <div className="pos-close-stat-value" style={{
+                            color: pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)"
+                          }}>
+                            {fmt.sign(pnl)}
+                          </div>
+                          <div className="pos-close-stat-label">
+                            {pnl >= 0 ? "Profit if Closed" : "Loss if Closed"}
+                          </div>
+                        </div>
+                        <div className="pos-close-stat">
+                          <div className="pos-close-stat-value" style={{
+                            color: daysToExp != null && daysToExp <= 7 ? "var(--accent-red)"
+                              : daysToExp != null && daysToExp <= 21 ? "var(--accent-amber)"
+                              : "var(--text-primary)"
+                          }}>
+                            {daysToExp != null ? `${daysToExp}d` : "—"}
+                          </div>
+                          <div className="pos-close-stat-label">Days to Expiration</div>
+                        </div>
+                      </div>
+
+                      {/* How to close */}
+                      <div className="pos-close-how">
+                        <div className="pos-close-how-title">
+                          <span style={{ fontSize: 14 }}>🔧</span>
+                          How to Close This Position
+                        </div>
+                        <div className="pos-close-step">
+                          <div className="pos-close-step-num">1</div>
+                          <div>
+                            In TWS, find <b>{sym}</b> {type.toUpperCase()} <b>${p.contract.strike}</b>{" "}
+                            {expDate ? expDate.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "2-digit" }) : ""}
+                          </div>
+                        </div>
+                        <div className="pos-close-step">
+                          <div className="pos-close-step-num">2</div>
+                          <div>
+                            Right-click → <b>Close Position</b> (or <b>Trade</b> → select <b>{closeAction}</b>)
+                          </div>
+                        </div>
+                        <div className="pos-close-step">
+                          <div className="pos-close-step-num">3</div>
+                          <div>
+                            Set Quantity: <b>{Math.abs(p.quantity)}</b> contracts
+                          </div>
+                        </div>
+                        <div className="pos-close-step">
+                          <div className="pos-close-step-num">4</div>
+                          <div>
+                            Order Type: <b>LMT</b> — Limit Price: <b>{fmt.usd(currentPerShare)}</b>/sh
+                            <span style={{ color: "var(--text-muted)", marginLeft: 4 }}>
+                              (midpoint — adjust for fill)
+                            </span>
+                          </div>
+                        </div>
+                        <div className="pos-close-step">
+                          <div className="pos-close-step-num">5</div>
+                          <div>
+                            TIF: <b>DAY</b> — Review all fields and click <b>Transmit</b>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Manual entry button + copy */}
+                      <div className="pos-close-actions">
+                        <button className="btn-manual" onClick={(e) => {
+                          e.stopPropagation();
+                          setShowCloseManual(showCloseManual === i ? null : i);
+                        }}>
+                          {showCloseManual === i ? "Hide Details" : "📋 Full Contract Details"}
+                        </button>
+                        <button className="manual-copy-btn" style={{ padding: "8px 14px", fontSize: 12 }} onClick={(e) => {
+                          e.stopPropagation();
+                          const underlying = p.contract.underlying || sym.replace(/\d.*/,"") || sym;
+                          const expIBKR = expDate
+                            ? `${expDate.getFullYear()}${String(expDate.getMonth()+1).padStart(2,"0")}${String(expDate.getDate()).padStart(2,"0")}`
+                            : "—";
+                          const text = [
+                            `Action: ${closeAction}`,
+                            `Quantity: ${Math.abs(p.quantity)}`,
+                            `Symbol: ${underlying}`,
+                            `Sec Type: OPT`,
+                            `Right: ${type === "call" ? "CALL (C)" : "PUT (P)"}`,
+                            `Strike: $${p.contract.strike}`,
+                            `Expiration: ${expIBKR}`,
+                            `Multiplier: ${mult}`,
+                            `Exchange: SMART`,
+                            `Order Type: LMT`,
+                            `Limit Price: $${currentPerShare.toFixed(2)}`,
+                            `TIF: DAY`,
+                          ].join("\n");
+                          navigator.clipboard.writeText(text);
+                        }}>
+                          Copy All
+                        </button>
+                      </div>
+
+                      {/* Full manual details */}
+                      {showCloseManual === i && (
+                        <div style={{ marginTop: 12 }}>
+                          <ManualLegPanel
+                            legs={[{
+                              side: closeAction.toLowerCase(),
+                              quantity: Math.abs(p.quantity),
+                              symbol: p.contract.underlying || sym,
+                              type: type,
+                              strike: p.contract.strike,
+                              expiration: p.contract.expiration,
+                              price: currentPerShare,
+                            }]}
+                            strategyName={`Close ${sym}`}
+                          />
+                        </div>
+                      )}
+
+                      {/* Note */}
+                      <div className="pos-close-note" style={{ marginTop: 12 }}>
+                        <b>💡 Tips:</b>{" "}
+                        {isSold ? (
+                          <>For <b>short options</b>: Buy to Close means you pay the current premium to exit.
+                          {pnl > 0 ? " You profit because the option is now cheaper than when you sold it." : " You lose because the option is now more expensive than when you sold it."}
+                          {" "}Many traders close short options at 50-75% of max profit to reduce risk.</>
+                        ) : (
+                          <>For <b>long options</b>: Sell to Close means you sell the option at current market price.
+                          {pnl > 0 ? " You profit because the option is now worth more than you paid." : " You lose because the option lost value (time decay / wrong direction)."}
+                          {daysToExp != null && daysToExp <= 21 ? " With less than 21 days left, time decay (theta) accelerates rapidly." : ""}</>
+                        )}
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </React.Fragment>
           );
         })}
       </tbody>
