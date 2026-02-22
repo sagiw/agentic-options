@@ -569,6 +569,60 @@ app.post("/api/close", async (req, res) => {
 });
 
 /**
+ * GET /api/nbbo — Get real-time NBBO for a specific option contract.
+ * Query params: symbol, strike, right (C/P), expiration (ISO date)
+ */
+app.get("/api/nbbo", async (req, res) => {
+  try {
+    const { symbol, strike, right, expiration } = req.query;
+
+    if (!symbol || !strike || !right || !expiration) {
+      return res.status(400).json({
+        success: false,
+        error: "Required params: symbol, strike, right (C/P), expiration",
+      });
+    }
+
+    if (!ibkr.isConnected) {
+      return res.json({ success: false, error: "IBKR not connected" });
+    }
+
+    const expDate = new Date(String(expiration));
+    const expStr = `${expDate.getFullYear()}${String(expDate.getMonth() + 1).padStart(2, "0")}${String(expDate.getDate()).padStart(2, "0")}`;
+
+    const nbbo = await ibkr.getOptionNBBO({
+      symbol: String(symbol),
+      strike: parseFloat(String(strike)),
+      right: String(right).toUpperCase() === "P" ? "P" : "C",
+      expiration: expStr,
+    });
+
+    if (!nbbo) {
+      return res.json({
+        success: false,
+        error: `No NBBO data for ${symbol} ${right} $${strike} exp ${expStr}`,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        bid: nbbo.bid,
+        ask: nbbo.ask,
+        mid: nbbo.mid,
+        last: nbbo.last,
+        symbol: String(symbol),
+        strike: parseFloat(String(strike)),
+        right: String(right).toUpperCase(),
+        expiration: expStr,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
  * GET /api/status — System health check
  */
 app.get("/api/status", (_req, res) => {
