@@ -22,6 +22,7 @@ import { blackScholesPrice, type BSParams } from "./black-scholes.js";
 import { calculateGreeks } from "./greeks.js";
 import { calculateLambda } from "./lambda.js";
 import { roundToTickSize } from "../utils/tick-size.js";
+import { estimateMargin } from "../utils/margin.js";
 
 /** Determine account tier */
 export function getAccountTier(netLiquidation: number): AccountTier {
@@ -371,7 +372,13 @@ export function findStrategies(
       const strategy = builder.build();
       if (!strategy) continue;
 
-      // Skip if required capital exceeds available funds
+      // Skip if estimated IBKR margin exceeds available funds.
+      // Uses conservative margin estimates with 15% safety buffer
+      // to avoid "insufficient funds" rejections from IBKR.
+      const marginRequired = estimateMargin(strategy, underlyingPrice);
+      if (marginRequired > account.availableFunds) continue;
+
+      // Also skip if theoretical capital exceeds available funds
       if (strategy.requiredCapital > account.availableFunds) continue;
 
       const { score, factors } = scoreStrategy(strategy, underlyingPrice, ivRank);

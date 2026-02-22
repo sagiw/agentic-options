@@ -31,6 +31,7 @@ import { config } from "./config/index.js";
 import { logger, agentLogger } from "./utils/logger.js";
 import { getMarketSnapshot } from "./api/market-data/yahoo.js";
 import { submitStrategy, type SubmitResult } from "./api/ibkr/orders.js";
+import { estimateMargin, checkMarginAvailability } from "./utils/margin.js";
 import type { OrderStatusUpdate } from "./api/ibkr/portfolio-sync.js";
 import type { Portfolio, AccountSummary } from "./types/portfolio.js";
 import type { RankedStrategy } from "./types/agents.js";
@@ -210,7 +211,9 @@ app.get("/api/recommendations", async (req, res) => {
       success: true,
       data: {
         symbol,
-        strategies: analysis.strategies.slice(0, 10).map((s, i) => ({
+        strategies: analysis.strategies.slice(0, 10).map((s, i) => {
+          const estMargin = estimateMargin(s.strategy, analysis.underlyingPrice);
+          return {
           id: i,
           name: s.strategy.name,
           type: s.strategy.type,
@@ -220,8 +223,12 @@ app.get("/api/recommendations", async (req, res) => {
           breakeven: s.strategy.breakeven,
           netDebit: s.strategy.netDebit,
           requiredCapital: s.strategy.requiredCapital,
+          estimatedMargin: Math.round(estMargin),
           capitalPct: portfolio.account.availableFunds > 0
             ? (s.strategy.requiredCapital / portfolio.account.availableFunds) * 100
+            : 0,
+          marginPct: portfolio.account.availableFunds > 0
+            ? (estMargin / portfolio.account.availableFunds) * 100
             : 0,
           riskPct: portfolio.account.netLiquidation > 0
             ? (s.strategy.maxLoss / portfolio.account.netLiquidation) * 100
@@ -238,7 +245,7 @@ app.get("/api/recommendations", async (req, res) => {
           factors: s.factors,
           explanation: s.strategy.name,
           approved: s.approved,
-        })),
+        }; }),
         account: {
           accountId: portfolio.account.accountId,
           netLiquidation: portfolio.account.netLiquidation,
@@ -367,8 +374,33 @@ app.post("/api/approve/:id", async (req, res) => {
     });
   }
 
+  // Margin check: verify available funds can cover estimated IBKR margin
+  const underlyingPrice = strategy.strategy.legs[0]?.price
+    ? strategy.strategy.legs[0].contract.strike
+    : netLiq / 100; // fallback
+  const marginCheck = checkMarginAvailability(
+    strategy.strategy,
+    portfolio.account.availableFunds || netLiq * 0.5,
+    underlyingPrice
+  );
+
+  if (!marginCheck.canExecute) {
+    log.warn(
+      `Strategy #${id} REJECTED (margin): ${marginCheck.message}`
+    );
+    return res.status(400).json({
+      success: false,
+      error: `Insufficient margin: estimated $${marginCheck.estimatedMargin.toFixed(0)} required, ` +
+        `but only $${marginCheck.availableFunds.toFixed(0)} available ` +
+        `(short $${marginCheck.shortfall.toFixed(0)})`,
+      estimatedMargin: marginCheck.estimatedMargin,
+      availableFunds: marginCheck.availableFunds,
+      shortfall: marginCheck.shortfall,
+    });
+  }
+
   strategy.approved = true;
-  log.info(`Strategy #${id} APPROVED: ${strategy.strategy.name}`);
+  log.info(`Strategy #${id} APPROVED: ${strategy.strategy.name} (margin: $${marginCheck.estimatedMargin.toFixed(0)})`);
 
   // ── Submit to IBKR ───────────────────────────────────────
   let submitResult: SubmitResult;
@@ -528,6 +560,7 @@ app.get("/api/portfolio-plan", async (req, res) => {
     };
 
     const netLiq = portfolio.account.netLiquidation || 50_000;
+    const availFunds = portfolio.account.availableFunds || netLiq * 0.5;
     const maxCapPerTrade = netLiq * (goalParams.maxRiskPct / 100) * 5; // up to 5x risk for capital
 
     log.info(`Portfolio Plan: scanning ${symbols.length} symbols for $${goalParams.monthlyTarget}/mo target`);
@@ -555,6 +588,7 @@ app.get("/api/portfolio-plan", async (req, res) => {
       maxLoss: number;
       expectedProfit: number;
       capitalRequired: number;
+      estimatedMargin: number;
       riskPct: number;
       avgDTE: number;
       legs: any[];
@@ -565,7 +599,7 @@ app.get("/api/portfolio-plan", async (req, res) => {
 
     for (const result of results) {
       if (result.status !== "fulfilled") continue;
-      const { symbol, strategies } = result.value;
+      const { symbol, price: symPrice, strategies } = result.value;
       for (const s of strategies) {
         const profit = s.strategy.maxProfit === "unlimited"
           ? s.strategy.maxLoss * 1.5
@@ -585,6 +619,12 @@ app.get("/api/portfolio-plan", async (req, res) => {
           ? Math.round(legDTEs.reduce((a, b) => a + b, 0) / legDTEs.length)
           : 30;
 
+        // Estimate IBKR margin for this strategy
+        const estMargin = estimateMargin(s.strategy, symPrice);
+
+        // Skip strategies that exceed available funds (margin-based filter)
+        if (estMargin > availFunds) continue;
+
         candidates.push({
           symbol,
           name: s.strategy.name,
@@ -594,6 +634,7 @@ app.get("/api/portfolio-plan", async (req, res) => {
           maxLoss: s.strategy.maxLoss,
           expectedProfit,
           capitalRequired: s.strategy.requiredCapital,
+          estimatedMargin: Math.round(estMargin),
           riskPct: netLiq > 0 ? (s.strategy.maxLoss / netLiq) * 100 : 0,
           avgDTE,
           legs: s.strategy.legs.map((l) => ({
@@ -630,8 +671,12 @@ app.get("/api/portfolio-plan", async (req, res) => {
       const symCount = symbolCount[candidate.symbol] || 0;
       if (symCount >= maxPerSymbol) continue;
 
-      // Capital constraint
-      if (totalCapital + candidate.capitalRequired > netLiq * 0.8) continue; // don't use more than 80% of account
+      // Margin constraint: check estimated IBKR margin against remaining available funds
+      const remainingFunds = availFunds * 0.9 - totalCapital;
+      if (candidate.estimatedMargin > remainingFunds) continue;
+
+      // Capital constraint: don't exceed actual available funds (with 10% buffer)
+      if (totalCapital + candidate.capitalRequired > availFunds * 0.9) continue;
 
       // Risk constraint: total risk shouldn't exceed monthly target * 3
       if (totalRisk + candidate.riskPct > goalParams.maxRiskPct * symbols.length) continue;
