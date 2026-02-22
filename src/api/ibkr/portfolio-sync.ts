@@ -105,6 +105,9 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   // updatePortfolioValue (from reqAccountUpdates) gives the full picture.
   private livePositions: Map<string, Position> = new Map();
 
+  // Reference to @stoqey/ib EventName enum (set during connect)
+  private eventNameRef: any = null;
+
   // Pending request resolvers
   private pendingRequests: Map<number, {
     resolve: (value: any) => void;
@@ -122,6 +125,9 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
 
     try {
       const { IBApi, EventName, SecType, OptionType: IBOptionType } = await import("@stoqey/ib");
+
+      // Store EventName reference for use in other methods (e.g., getOptionNBBO)
+      this.eventNameRef = EventName;
 
       this.ib = new IBApi({
         host: config.ibkr.host,
@@ -810,6 +816,130 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       },
       lastUpdated: new Date(),
     };
+  }
+
+  // ══════════════════════════════════════════════════════════
+  //  NBBO SNAPSHOT (for order price validation)
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Request a snapshot of the current NBBO (National Best Bid and Offer)
+   * for an option contract. Returns bid, ask, mid, and last price.
+   *
+   * Used before order submission to ensure limit prices are within
+   * IBKR's acceptable range — prevents "Limit price too far outside
+   * of NBBO" rejections.
+   *
+   * Returns null if data is unavailable within the timeout.
+   */
+  async getOptionNBBO(params: {
+    symbol: string;
+    strike: number;
+    right: "C" | "P";
+    expiration: string; // YYYYMMDD
+    exchange?: string;
+  }): Promise<{ bid: number; ask: number; mid: number; last: number } | null> {
+    if (!this.connected) return null;
+
+    const reqId = this.nextReqId++;
+    const prices: { bid: number; ask: number; last: number } = {
+      bid: 0, ask: 0, last: 0,
+    };
+
+    const contract: any = {
+      symbol: params.symbol,
+      secType: "OPT",
+      exchange: params.exchange || "SMART",
+      currency: "USD",
+      strike: params.strike,
+      right: params.right,
+      lastTradeDateOrContractMonth: params.expiration,
+      multiplier: "100",
+    };
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const onTick = (_reqId: number, tickType: number, price: number) => {
+        if (_reqId !== reqId || price <= 0 || price === -1) return;
+
+        // tickType: 1=bid, 2=ask, 4=last, 6=high, 7=low, 9=close
+        if (tickType === 1) prices.bid = price;
+        else if (tickType === 2) prices.ask = price;
+        else if (tickType === 4) prices.last = price;
+
+        // Resolve as soon as we have both bid and ask
+        if (prices.bid > 0 && prices.ask > 0 && !resolved) {
+          resolved = true;
+          cleanup();
+          const mid = Math.round(((prices.bid + prices.ask) / 2) * 100) / 100;
+          log.info(
+            `NBBO snapshot ${params.symbol} ${params.strike}${params.right}: ` +
+            `bid=$${prices.bid} ask=$${prices.ask} mid=$${mid} last=$${prices.last}`
+          );
+          resolve({ bid: prices.bid, ask: prices.ask, mid, last: prices.last });
+        }
+      };
+
+      const onSnapshotEnd = (_reqId: number) => {
+        if (_reqId !== reqId || resolved) return;
+        resolved = true;
+        cleanup();
+        // We might have partial data
+        if (prices.bid > 0 || prices.ask > 0 || prices.last > 0) {
+          const bid = prices.bid || prices.last * 0.95;
+          const ask = prices.ask || prices.last * 1.05;
+          const mid = Math.round(((bid + ask) / 2) * 100) / 100;
+          resolve({ bid, ask, mid, last: prices.last });
+        } else {
+          resolve(null);
+        }
+      };
+
+      const cleanup = () => {
+        this.ib.removeListener(EventNameRef.tickPrice, onTick);
+        this.ib.removeListener(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+        try { this.ib.cancelMktData(reqId); } catch {}
+      };
+
+      // We need EventName reference — save it during connect
+      const EventNameRef = this.eventNameRef!;
+      this.ib.on(EventNameRef.tickPrice, onTick);
+      this.ib.on(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+
+      // Request snapshot (5th param = true means snapshot, not streaming)
+      try {
+        this.ib.reqMktData(reqId, contract, "", true, false);
+      } catch (err) {
+        log.warn(`NBBO snapshot request failed: ${err}`);
+        cleanup();
+        resolve(null);
+        return;
+      }
+
+      // Timeout — resolve with whatever we have after 4 seconds
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          if (prices.bid > 0 || prices.ask > 0 || prices.last > 0) {
+            const bid = prices.bid || prices.last * 0.95;
+            const ask = prices.ask || prices.last * 1.05;
+            const mid = Math.round(((bid + ask) / 2) * 100) / 100;
+            log.info(
+              `NBBO snapshot (timeout, partial) ${params.symbol} ${params.strike}${params.right}: ` +
+              `bid=$${bid.toFixed(2)} ask=$${ask.toFixed(2)} mid=$${mid.toFixed(2)}`
+            );
+            resolve({ bid, ask, mid, last: prices.last });
+          } else {
+            log.warn(
+              `NBBO snapshot timeout — no data for ${params.symbol} ${params.strike}${params.right}`
+            );
+            resolve(null);
+          }
+        }
+      }, 4_000);
+    });
   }
 
   // ══════════════════════════════════════════════════════════

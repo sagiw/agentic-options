@@ -149,7 +149,7 @@ async function submitLeg(
   // Round limit price to valid tick size to avoid IBKR rejection:
   // "The price does not conform to the minimum price variation for this contract."
   const rawPrice = leg.price ?? 0;
-  const tickRoundedPrice = isOption
+  let tickRoundedPrice = isOption
     ? roundToTickSize(rawPrice, underlying)
     : roundToTickSize(rawPrice, underlying, true);
 
@@ -158,6 +158,65 @@ async function submitLeg(
       `Tick size adjustment: $${rawPrice.toFixed(4)} → $${tickRoundedPrice.toFixed(2)} ` +
       `(${underlying} ${isOption ? "option" : "stock"})`
     );
+  }
+
+  // ── NBBO validation: clamp limit price to actual market bid/ask ──
+  // Without this, Black-Scholes theoretical prices can be far from the
+  // real NBBO, causing IBKR to reject with "Limit price too far outside of NBBO".
+  if (isOption && strike && right && expiration && orderType === "LMT") {
+    try {
+      const nbbo = await ibkr.getOptionNBBO({
+        symbol: underlying,
+        strike: strike!,
+        right: right!,
+        expiration: expiration!,
+        exchange: leg.contract.exchange || "SMART",
+      });
+
+      if (nbbo && nbbo.bid > 0 && nbbo.ask > 0) {
+        const oldPrice = tickRoundedPrice;
+        const spread = nbbo.ask - nbbo.bid;
+
+        if (leg.side === "buy") {
+          // BUY: use mid-price (or theoretical if within NBBO spread).
+          // Never exceed ask, never go below bid.
+          if (tickRoundedPrice > nbbo.ask * 1.05 || tickRoundedPrice < nbbo.bid * 0.5) {
+            // Price is way off — use mid price for a fair fill
+            tickRoundedPrice = nbbo.mid;
+          }
+          // Clamp: willing to pay up to ask, but not less than bid
+          tickRoundedPrice = Math.min(tickRoundedPrice, nbbo.ask);
+          tickRoundedPrice = Math.max(tickRoundedPrice, nbbo.bid);
+        } else {
+          // SELL: use mid-price (or theoretical if within NBBO spread).
+          // Never go below bid, never exceed ask.
+          if (tickRoundedPrice < nbbo.bid * 0.5 || tickRoundedPrice > nbbo.ask * 1.5) {
+            // Price is way off — use mid price for a fair fill
+            tickRoundedPrice = nbbo.mid;
+          }
+          // Clamp: willing to sell down to bid, but not more than ask
+          tickRoundedPrice = Math.max(tickRoundedPrice, nbbo.bid);
+          tickRoundedPrice = Math.min(tickRoundedPrice, nbbo.ask);
+        }
+
+        // Re-round to tick size after NBBO adjustment
+        tickRoundedPrice = roundToTickSize(tickRoundedPrice, underlying);
+
+        if (oldPrice !== tickRoundedPrice) {
+          log.info(
+            `NBBO adjustment: $${oldPrice.toFixed(2)} → $${tickRoundedPrice.toFixed(2)} ` +
+            `(NBBO: $${nbbo.bid.toFixed(2)}/$${nbbo.ask.toFixed(2)}, mid: $${nbbo.mid.toFixed(2)})`
+          );
+        }
+      } else {
+        log.warn(
+          `No NBBO data for ${underlying} ${strike}${right} — using theoretical price $${tickRoundedPrice.toFixed(2)}`
+        );
+      }
+    } catch (err) {
+      log.warn(`NBBO lookup failed for ${underlying} ${strike}${right}: ${err}`);
+      // Continue with theoretical price — IBKR may still accept it
+    }
   }
 
   return ibkr.placeOrder({

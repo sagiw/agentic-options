@@ -23,7 +23,10 @@
 
 import type { OptionsStrategy, StrategyType } from "../types/options.js";
 
-const SAFETY_BUFFER = 1.15; // 15% safety margin above estimated requirement
+const SAFETY_BUFFER = 1.25; // 25% safety margin above estimated requirement
+// Bumped from 15% → 25% because IBKR adds surcharges for concentration risk,
+// special margin requirements on certain underlyings, and rounding differences
+// between Reg-T and their actual risk engine.
 
 /**
  * Estimate the IBKR Initial Margin requirement for a strategy.
