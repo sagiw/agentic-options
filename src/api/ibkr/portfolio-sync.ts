@@ -874,12 +874,30 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       let resolved = false;
 
       const finalize = () => {
-        // Restore to real-time data type after snapshot
+        // Restore to real-time data type after request
         try { this.ib.reqMarketDataType(1); } catch {}
       };
 
+      const resolveWith = () => {
+        const refPrice = prices.last || prices.close || 0;
+        const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
+        const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
+        if (bid > 0 || ask > 0) {
+          const mid = Math.round(((bid + ask) / 2) * 100) / 100;
+          log.info(
+            `NBBO [${reqId}] ${tag}: bid=$${bid} ask=$${ask} mid=$${mid} last=$${refPrice}` +
+            (prices.isDelayed ? " (DELAYED)" : " (LIVE)")
+          );
+          resolve({ bid, ask, mid, last: refPrice, delayed: prices.isDelayed });
+        } else {
+          log.warn(`NBBO [${reqId}] ${tag}: no usable prices`);
+          resolve(null);
+        }
+      };
+
       const onTick = (_reqId: number, tickType: number, price: number) => {
-        if (_reqId !== reqId || price <= 0 || price === -1) return;
+        if (_reqId !== reqId || resolved) return;
+        if (price <= 0 || price === -1) return;
 
         // Real-time ticks: 1=bid, 2=ask, 4=last, 6=high, 7=low, 9=close
         // Delayed ticks:   66=bid, 67=ask, 68=last, 75=close
@@ -891,55 +909,40 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         else if (tickType === 67) { prices.ask = price; prices.isDelayed = true; }
         else if (tickType === 68) { prices.last = price; prices.isDelayed = true; }
         else if (tickType === 75) { prices.close = price; prices.isDelayed = true; }
+        else return; // ignore unrelated tick types
 
-        log.info(`NBBO [${reqId}] tick: type=${tickType} price=${price} (${prices.isDelayed ? "delayed" : "live"})`);
+        log.info(`NBBO [${reqId}] tick: type=${tickType} price=${price}`);
 
         // Resolve as soon as we have both bid and ask
-        if (prices.bid > 0 && prices.ask > 0 && !resolved) {
+        if (prices.bid > 0 && prices.ask > 0) {
           resolved = true;
           cleanup();
           finalize();
-          const mid = Math.round(((prices.bid + prices.ask) / 2) * 100) / 100;
-          log.info(
-            `NBBO snapshot [${reqId}] ${tag}: ` +
-            `bid=$${prices.bid} ask=$${prices.ask} mid=$${mid} last=$${prices.last}` +
-            (prices.isDelayed ? " (DELAYED)" : " (LIVE)")
-          );
-          resolve({ bid: prices.bid, ask: prices.ask, mid, last: prices.last, delayed: prices.isDelayed });
+          resolveWith();
         }
       };
 
+      // ── Handle tickSnapshotEnd (only fires in snapshot mode, kept as safety) ──
       const onSnapshotEnd = (_reqId: number) => {
         if (_reqId !== reqId || resolved) return;
         resolved = true;
         cleanup();
         finalize();
-        // We might have partial data — use whatever we have
         if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
-          const refPrice = prices.last || prices.close || 0;
-          const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
-          const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
-          if (bid > 0 || ask > 0) {
-            const mid = Math.round(((bid + ask) / 2) * 100) / 100;
-            log.info(`NBBO snapshot [${reqId}] ${tag} (snapshotEnd, partial): bid=$${bid} ask=$${ask} mid=$${mid}`);
-            resolve({ bid, ask, mid, last: prices.last || prices.close, delayed: prices.isDelayed });
-          } else {
-            log.warn(`NBBO snapshot [${reqId}] ${tag}: snapshotEnd with no usable prices`);
-            resolve(null);
-          }
+          resolveWith();
         } else {
-          log.warn(`NBBO snapshot [${reqId}] ${tag}: snapshotEnd with no data`);
+          log.warn(`NBBO [${reqId}] ${tag}: snapshotEnd with no data`);
           resolve(null);
         }
       };
 
-      // ── Handle IBKR error events (e.g., contract not found, no mkt data perms) ──
+      // ── Handle IBKR error events ──
       const onError = (_reqId: number, errorCode: number, errorMsg: string) => {
         if (_reqId !== reqId || resolved) return;
-        // Certain error codes are non-fatal informational messages
+        // Non-fatal informational messages
         // 2104, 2106, 2158 = market data farm connection messages
         // 2119 = market data farm is connecting
-        // 10167 = "Displaying delayed data" — this is expected and good
+        // 10167 = "Displaying delayed data" — expected when market closed
         if ([2104, 2106, 2119, 2158, 10167].includes(errorCode)) {
           if (errorCode === 10167) {
             log.info(`NBBO [${reqId}] ${tag}: IBKR switched to delayed data`);
@@ -948,12 +951,8 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           return;
         }
 
-        log.warn(`NBBO snapshot [${reqId}] ${tag}: IBKR error ${errorCode}: ${errorMsg}`);
-        // Fatal errors: resolve null immediately
-        // 200 = No security definition found
-        // 354 = Requested market data is not subscribed
-        // 10168 = Requested market data is not subscribed (delayed)
-        // 162 = Historical market data Service error
+        log.warn(`NBBO [${reqId}] ${tag}: IBKR error ${errorCode}: ${errorMsg}`);
+        // Fatal errors: 200=no contract, 354/10168=no data subscription, 162=historical error
         if ([200, 354, 10168, 162, 10187, 10090].includes(errorCode)) {
           resolved = true;
           cleanup();
@@ -970,43 +969,49 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         try { this.ib.cancelMktData(reqId); } catch {}
       };
 
-      // We need EventName reference — save it during connect
+      // Register listeners
       const EventNameRef = this.eventNameRef!;
       this.ib.on(EventNameRef.tickPrice, onTick);
       this.ib.on(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
       this.ib.on(EventNameRef.error, onError);
 
-      // Request snapshot (5th param = true means snapshot, not streaming)
+      // ── Use STREAMING mode (snapshot=false) ──
+      // Snapshot mode doesn't return delayed data when market is closed.
+      // Streaming mode with DELAYED_FROZEN will send delayed ticks (66,67,68,75).
+      // We cancel the subscription once we have enough data.
       try {
-        this.ib.reqMktData(reqId, contract, "", true, false);
+        this.ib.reqMktData(reqId, contract, "", false, false);
       } catch (err) {
-        log.warn(`NBBO snapshot [${reqId}] request failed: ${err}`);
+        log.warn(`NBBO [${reqId}] reqMktData failed: ${err}`);
         cleanup();
         finalize();
         resolve(null);
         return;
       }
 
-      // Timeout — resolve with whatever we have after 8 seconds
+      // ── Settle timer: after 3s, if we have any data, resolve with it ──
+      // This handles the case where only partial data (e.g., last but no bid/ask) arrives.
+      setTimeout(() => {
+        if (!resolved && (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0)) {
+          resolved = true;
+          cleanup();
+          finalize();
+          log.info(`NBBO [${reqId}] ${tag}: settling with partial data after 3s`);
+          resolveWith();
+        }
+      }, 3_000);
+
+      // ── Hard timeout: 8s, resolve with whatever we have ──
       setTimeout(() => {
         if (!resolved) {
           resolved = true;
           cleanup();
           finalize();
           if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
-            const refPrice = prices.last || prices.close || 0;
-            const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
-            const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
-            const mid = Math.round(((bid + ask) / 2) * 100) / 100;
-            log.info(
-              `NBBO snapshot [${reqId}] ${tag} (timeout, partial): ` +
-              `bid=$${bid.toFixed(2)} ask=$${ask.toFixed(2)} mid=$${mid.toFixed(2)}`
-            );
-            resolve({ bid, ask, mid, last: prices.last || prices.close, delayed: prices.isDelayed });
+            log.info(`NBBO [${reqId}] ${tag}: timeout with partial data`);
+            resolveWith();
           } else {
-            log.warn(
-              `NBBO snapshot [${reqId}] ${tag}: timeout — no data received`
-            );
+            log.warn(`NBBO [${reqId}] ${tag}: timeout — no data received`);
             resolve(null);
           }
         }
