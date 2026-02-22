@@ -475,6 +475,135 @@
     }
     .tab-badge-active { background: var(--accent-blue); color: white; }
     .tab-badge-idle { background: rgba(148,163,184,0.2); color: var(--text-muted); }
+    /* Watchlist symbols */
+    .watchlist-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+    }
+    .watchlist-chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 4px 10px; border-radius: 6px; font-size: 12px;
+      font-weight: 700; font-family: inherit;
+      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
+      color: var(--accent-blue);
+    }
+    .watchlist-chip-remove {
+      background: none; border: none; color: var(--text-muted); cursor: pointer;
+      font-size: 14px; line-height: 1; padding: 0 0 0 2px; font-family: inherit;
+    }
+    .watchlist-chip-remove:hover { color: var(--accent-red); }
+    .watchlist-add-row { display: flex; gap: 6px; margin-top: 8px; }
+    .watchlist-add-input {
+      background: rgba(0,0,0,0.2); border: 1px solid var(--border);
+      color: var(--text-primary); padding: 5px 8px; border-radius: 6px;
+      font-family: inherit; font-size: 12px; width: 100px;
+      text-transform: uppercase; outline: none;
+    }
+    .watchlist-add-input:focus { border-color: var(--accent-blue); }
+    .watchlist-add-btn {
+      background: rgba(59,130,246,0.12); border: 1px solid rgba(59,130,246,0.3);
+      color: var(--accent-blue); padding: 5px 10px; border-radius: 6px;
+      font-size: 11px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .watchlist-add-btn:hover { background: rgba(59,130,246,0.25); }
+    /* Scan All button */
+    .btn-scan-all {
+      background: linear-gradient(135deg, var(--accent-purple), var(--accent-blue));
+      color: white; border: none;
+      padding: 10px 28px; border-radius: 8px; font-size: 14px;
+      font-weight: 700; cursor: pointer; font-family: inherit;
+      transition: all 0.2s; margin-bottom: 16px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .btn-scan-all:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(139,92,246,0.3); }
+    .btn-scan-all:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+    /* Portfolio Plan */
+    .plan-container {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 14px; padding: 24px; margin-bottom: 16px;
+    }
+    .plan-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 20px;
+    }
+    .plan-title {
+      font-size: 16px; font-weight: 700; color: var(--accent-purple);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .plan-target-badge {
+      font-size: 13px; font-weight: 700; padding: 4px 12px;
+      border-radius: 8px;
+      background: rgba(139,92,246,0.15); border: 1px solid rgba(139,92,246,0.3);
+      color: var(--accent-purple);
+    }
+    .plan-summary-row {
+      display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px;
+      margin-bottom: 20px; padding: 16px;
+      background: rgba(0,0,0,0.15); border-radius: 10px;
+    }
+    .plan-summary-item { text-align: center; }
+    .plan-summary-value { font-size: 22px; font-weight: 800; }
+    .plan-summary-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 3px; }
+    .plan-progress-section { margin-bottom: 20px; }
+    .plan-progress-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 8px; font-size: 13px;
+    }
+    .plan-progress-bar {
+      background: rgba(0,0,0,0.25); border-radius: 8px; height: 14px;
+      overflow: hidden; position: relative;
+    }
+    .plan-progress-fill {
+      height: 100%; border-radius: 8px; transition: width 0.6s ease;
+      position: relative;
+    }
+    .plan-progress-fill::after {
+      content: ""; position: absolute; right: 0; top: 0; bottom: 0; width: 2px;
+      background: rgba(255,255,255,0.6);
+    }
+    .plan-strategies-list { display: flex; flex-direction: column; gap: 10px; }
+    .plan-strat-row {
+      display: grid; grid-template-columns: 36px 1fr 120px 100px 100px 90px 60px;
+      gap: 12px; align-items: center;
+      background: rgba(0,0,0,0.1); border-radius: 10px; padding: 12px 16px;
+      border: 1px solid var(--border); transition: border-color 0.2s;
+    }
+    .plan-strat-row:hover { border-color: rgba(139,92,246,0.3); }
+    .plan-strat-num {
+      width: 28px; height: 28px; border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 800;
+      background: rgba(139,92,246,0.15); color: var(--accent-purple);
+    }
+    .plan-strat-name { font-weight: 600; font-size: 13px; }
+    .plan-strat-symbol {
+      font-size: 11px; color: var(--accent-blue); font-weight: 700;
+      margin-top: 2px;
+    }
+    .plan-strat-profit { font-weight: 700; color: var(--accent-green); font-size: 14px; }
+    .plan-strat-risk { font-weight: 600; font-size: 12px; }
+    .plan-strat-capital { font-size: 12px; color: var(--text-secondary); }
+    .plan-strat-dte { font-size: 12px; color: var(--text-muted); }
+    .plan-strat-pct {
+      font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 4px;
+      text-align: center;
+    }
+    .plan-allocation-bar {
+      height: 4px; background: rgba(148,163,184,0.1); border-radius: 2px;
+      overflow: hidden; margin-top: 4px;
+    }
+    .plan-allocation-fill {
+      height: 100%; border-radius: 2px; transition: width 0.5s;
+    }
+    .plan-symbol-section {
+      margin-bottom: 8px;
+    }
+    .plan-symbol-header {
+      font-size: 11px; font-weight: 700; color: var(--accent-blue);
+      text-transform: uppercase; letter-spacing: 1px;
+      margin-bottom: 6px; padding: 4px 8px;
+      background: rgba(59,130,246,0.06); border-radius: 6px;
+      display: flex; justify-content: space-between; align-items: center;
+    }
     /* Responsive */
     @media (max-width: 1024px) {
       .metrics-grid { grid-template-columns: repeat(3, 1fr); }
@@ -486,6 +615,8 @@
       .strategy-details { grid-template-columns: repeat(2, 1fr); }
       .account-banner-value { font-size: 28px; }
       .account-banner-stats { gap: 16px; }
+      .plan-summary-row { grid-template-columns: repeat(2, 1fr); }
+      .plan-strat-row { grid-template-columns: 1fr; font-size: 12px; }
     }
   </style>
 </head>
@@ -1336,7 +1467,11 @@ function App() {
     minDTE: 14,
     maxDTE: 60,
     strategies: ["bull_call_spread", "bear_put_spread", "iron_condor", "cash_secured_put"],
+    symbols: ["AAPL", "MSFT", "TSLA", "SPY"],
   });
+  const [newWatchlistSymbol, setNewWatchlistSymbol] = useState("");
+  const [portfolioPlan, setPortfolioPlan] = useState(null);
+  const [scanningAll, setScanningAll] = useState(false);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -1366,6 +1501,23 @@ function App() {
     if (r) setRecommendations(r);
     setAnalyzing(false);
   }, [symbol, goals]);
+
+  const scanAll = useCallback(async () => {
+    if (goals.symbols.length === 0) return;
+    setScanningAll(true);
+    setPortfolioPlan(null);
+    const params = new URLSearchParams({
+      symbols: goals.symbols.join(","),
+      monthlyTarget: String(goals.monthlyTarget),
+      maxRiskPct: String(goals.maxRiskPct),
+      minDTE: String(goals.minDTE),
+      maxDTE: String(goals.maxDTE),
+      strategies: goals.strategies.join(","),
+    });
+    const data = await apiFetch(`/portfolio-plan?${params}`);
+    if (data) setPortfolioPlan(data);
+    setScanningAll(false);
+  }, [goals]);
 
   const addToast = useCallback((type, title, message) => {
     const id = Date.now();
@@ -1614,7 +1766,7 @@ function App() {
                 <span style={{ fontSize: 16 }}>🎯</span>
                 Trading Goals
                 <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>
-                  — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d
+                  — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d | {goals.symbols.length} symbols
                 </span>
               </div>
               <span className="goals-toggle-arrow" style={{ transform: goalsOpen ? "rotate(180deg)" : "rotate(0)" }}>▼</span>
@@ -1649,12 +1801,16 @@ function App() {
                       { id: "bear_put_spread", label: "Bear Put Spread" },
                       { id: "iron_condor", label: "Iron Condor" },
                       { id: "cash_secured_put", label: "Cash Secured Put" },
+                      { id: "covered_call", label: "Covered Call" },
+                      { id: "protective_put", label: "Protective Put" },
+                      { id: "straddle", label: "Straddle" },
+                      { id: "strangle", label: "Strangle" },
                     ].map((st) => (
                       <button key={st.id}
                         className={`goal-chip ${goals.strategies.includes(st.id) ? "active" : ""}`}
                         onClick={() => {
                           const has = goals.strategies.includes(st.id);
-                          if (has && goals.strategies.length <= 1) return; // keep at least one
+                          if (has && goals.strategies.length <= 1) return;
                           setGoals({
                             ...goals,
                             strategies: has
@@ -1665,6 +1821,44 @@ function App() {
                         {st.label}
                       </button>
                     ))}
+                  </div>
+                </div>
+                <div className="goal-field" style={{ gridColumn: "1 / -1" }}>
+                  <label>Symbols Watchlist ({goals.symbols.length} tickers)</label>
+                  <div className="watchlist-chips">
+                    {goals.symbols.map((sym) => (
+                      <span key={sym} className="watchlist-chip">
+                        {sym}
+                        <button className="watchlist-chip-remove"
+                          onClick={() => setGoals({
+                            ...goals,
+                            symbols: goals.symbols.filter((s) => s !== sym),
+                          })}>×</button>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="watchlist-add-row">
+                    <input className="watchlist-add-input"
+                      placeholder="NVDA"
+                      value={newWatchlistSymbol}
+                      onChange={(e) => setNewWatchlistSymbol(e.target.value.toUpperCase())}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newWatchlistSymbol.trim()) {
+                          const sym = newWatchlistSymbol.trim();
+                          if (!goals.symbols.includes(sym)) {
+                            setGoals({ ...goals, symbols: [...goals.symbols, sym] });
+                          }
+                          setNewWatchlistSymbol("");
+                        }
+                      }} />
+                    <button className="watchlist-add-btn"
+                      onClick={() => {
+                        const sym = newWatchlistSymbol.trim();
+                        if (sym && !goals.symbols.includes(sym)) {
+                          setGoals({ ...goals, symbols: [...goals.symbols, sym] });
+                        }
+                        setNewWatchlistSymbol("");
+                      }}>+ Add</button>
                   </div>
                 </div>
               </div>
@@ -1728,6 +1922,200 @@ function App() {
             );
           })()}
 
+          {/* Scan All button */}
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16 }}>
+            <button className="btn-scan-all" onClick={scanAll} disabled={scanningAll || goals.symbols.length === 0}>
+              {scanningAll ? (
+                <><div className="spinner" style={{ width: 16, height: 16, borderWidth: 2, marginBottom: 0 }} /> Scanning {goals.symbols.length} symbols...</>
+              ) : (
+                <>🔍 Scan All & Build Plan ({goals.symbols.length} symbols)</>
+              )}
+            </button>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              Analyzes all watchlist symbols and builds an optimal combination to reach your monthly target
+            </span>
+          </div>
+
+          {/* ── Portfolio Plan (multi-symbol combined) ────── */}
+          {portfolioPlan && (
+            <div className="plan-container">
+              <div className="plan-header">
+                <div className="plan-title">
+                  <span style={{ fontSize: 20 }}>📊</span>
+                  Portfolio Plan — Path to {fmt.usd(portfolioPlan.monthlyTarget)}/mo
+                </div>
+                <div className="plan-target-badge">
+                  {portfolioPlan.progressPct >= 100 ? "✓ Goal Achievable" : `${portfolioPlan.progressPct.toFixed(0)}% of Goal`}
+                </div>
+              </div>
+
+              {/* Summary stats */}
+              <div className="plan-summary-row">
+                <div className="plan-summary-item">
+                  <div className="plan-summary-value" style={{ color: "var(--accent-purple)" }}>
+                    {fmt.usd(portfolioPlan.monthlyTarget)}
+                  </div>
+                  <div className="plan-summary-label">Monthly Target</div>
+                </div>
+                <div className="plan-summary-item">
+                  <div className="plan-summary-value" style={{ color: "var(--accent-green)" }}>
+                    {fmt.usd(portfolioPlan.projectedMonthly)}
+                  </div>
+                  <div className="plan-summary-label">Projected Monthly</div>
+                </div>
+                <div className="plan-summary-item">
+                  <div className="plan-summary-value" style={{ color: "var(--accent-cyan)" }}>
+                    {portfolioPlan.selectedStrategies.length}
+                  </div>
+                  <div className="plan-summary-label">Active Trades</div>
+                </div>
+                <div className="plan-summary-item">
+                  <div className="plan-summary-value" style={{ color: "var(--accent-amber)" }}>
+                    {fmt.usd(portfolioPlan.totalCapitalRequired)}
+                  </div>
+                  <div className="plan-summary-label">Total Capital</div>
+                </div>
+                <div className="plan-summary-item">
+                  <div className="plan-summary-value" style={{
+                    color: portfolioPlan.totalRiskPct > 5 ? "var(--accent-red)" : "var(--accent-green)"
+                  }}>
+                    {portfolioPlan.totalRiskPct.toFixed(1)}%
+                  </div>
+                  <div className="plan-summary-label">Total Risk</div>
+                </div>
+              </div>
+
+              {/* Progress bar */}
+              <div className="plan-progress-section">
+                <div className="plan-progress-header">
+                  <span style={{ fontWeight: 700 }}>Goal Progress</span>
+                  <span style={{
+                    fontWeight: 700,
+                    color: portfolioPlan.progressPct >= 100 ? "var(--accent-green)" : "var(--accent-purple)",
+                  }}>
+                    {fmt.usd(portfolioPlan.projectedMonthly)} / {fmt.usd(portfolioPlan.monthlyTarget)}
+                  </span>
+                </div>
+                <div className="plan-progress-bar">
+                  <div className="plan-progress-fill" style={{
+                    width: Math.min(portfolioPlan.progressPct, 100) + "%",
+                    background: portfolioPlan.progressPct >= 100
+                      ? "linear-gradient(90deg, var(--accent-green), #34d399)"
+                      : portfolioPlan.progressPct >= 60
+                      ? "linear-gradient(90deg, var(--accent-purple), var(--accent-cyan))"
+                      : "linear-gradient(90deg, var(--accent-amber), var(--accent-red))",
+                  }} />
+                </div>
+              </div>
+
+              {/* Per-symbol breakdown */}
+              {(() => {
+                // Group strategies by symbol
+                const bySymbol = {};
+                (portfolioPlan.selectedStrategies || []).forEach((s, i) => {
+                  if (!bySymbol[s.symbol]) bySymbol[s.symbol] = [];
+                  bySymbol[s.symbol].push({ ...s, idx: i });
+                });
+                return Object.entries(bySymbol).map(([sym, strats]) => {
+                  const symProfit = strats.reduce((sum, s) => sum + s.expectedProfit, 0);
+                  return (
+                    <div key={sym} className="plan-symbol-section">
+                      <div className="plan-symbol-header">
+                        <span>{sym} — {strats.length} {strats.length === 1 ? "strategy" : "strategies"}</span>
+                        <span style={{ color: "var(--accent-green)", fontWeight: 700 }}>
+                          +{fmt.usd(symProfit)}/trade
+                        </span>
+                      </div>
+                      <div className="plan-strategies-list">
+                        {strats.map((s) => {
+                          const allocationPct = portfolioPlan.totalCapitalRequired > 0
+                            ? (s.capitalRequired / portfolioPlan.totalCapitalRequired * 100)
+                            : 0;
+                          return (
+                            <div key={s.idx} className="plan-strat-row">
+                              <div className="plan-strat-num">{s.idx + 1}</div>
+                              <div>
+                                <div className="plan-strat-name">{s.name}</div>
+                                <div className="plan-strat-symbol">{s.type}</div>
+                              </div>
+                              <div className="plan-strat-profit">+{fmt.usd(s.expectedProfit)}</div>
+                              <div className="plan-strat-risk" style={{
+                                color: s.riskPct > 2 ? "var(--accent-red)" : "var(--accent-green)"
+                              }}>
+                                Risk: {s.riskPct.toFixed(1)}%
+                              </div>
+                              <div className="plan-strat-capital">{fmt.usd(s.capitalRequired)}</div>
+                              <div className="plan-strat-dte">{s.avgDTE}d DTE</div>
+                              <div className="plan-strat-pct" style={{
+                                background: "rgba(139,92,246,0.1)",
+                                color: "var(--accent-purple)",
+                              }}>
+                                {allocationPct.toFixed(0)}%
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                });
+              })()}
+
+              {/* Allocation chart */}
+              {portfolioPlan.selectedStrategies?.length > 0 && (
+                <div style={{ marginTop: 16, padding: 12, background: "rgba(0,0,0,0.1)", borderRadius: 10 }}>
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+                    Capital Allocation
+                  </div>
+                  <div style={{ display: "flex", borderRadius: 6, overflow: "hidden", height: 24 }}>
+                    {portfolioPlan.selectedStrategies.map((s, i) => {
+                      const pct = portfolioPlan.totalCapitalRequired > 0
+                        ? (s.capitalRequired / portfolioPlan.totalCapitalRequired * 100)
+                        : 0;
+                      const colors = ["var(--accent-blue)", "var(--accent-green)", "var(--accent-purple)",
+                        "var(--accent-cyan)", "var(--accent-amber)", "var(--accent-red)"];
+                      return (
+                        <div key={i} style={{
+                          width: pct + "%",
+                          background: colors[i % colors.length],
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: 9, fontWeight: 700, color: "white",
+                          minWidth: pct > 5 ? 0 : 2,
+                        }} title={`${s.symbol} ${s.name}: ${pct.toFixed(0)}%`}>
+                          {pct > 8 ? s.symbol : ""}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ display: "flex", gap: 12, marginTop: 8, flexWrap: "wrap" }}>
+                    {portfolioPlan.selectedStrategies.map((s, i) => {
+                      const colors = ["var(--accent-blue)", "var(--accent-green)", "var(--accent-purple)",
+                        "var(--accent-cyan)", "var(--accent-amber)", "var(--accent-red)"];
+                      return (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: 2, background: colors[i % colors.length] }} />
+                          <span style={{ color: "var(--text-muted)" }}>{s.symbol}</span>
+                          <span style={{ fontWeight: 600 }}>{s.name}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {portfolioPlan.selectedStrategies?.length === 0 && (
+                <div style={{ textAlign: "center", padding: 30, color: "var(--text-muted)" }}>
+                  No strategies found matching your goal criteria. Try adjusting risk %, DTE range, or adding more symbols.
+                </div>
+              )}
+            </div>
+          )}
+
+          <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 11, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 1 }}>
+              Or analyze a single symbol:
+            </span>
+          </div>
           <div className="symbol-input-group">
             <input className="symbol-input" placeholder="AAPL" value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}

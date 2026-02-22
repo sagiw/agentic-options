@@ -505,6 +505,207 @@ app.get("/api/orders/verify", async (_req, res) => {
   }
 });
 
+/**
+ * GET /api/portfolio-plan — Multi-symbol portfolio plan.
+ * Analyzes all specified symbols, picks the best strategies across all of them,
+ * and builds a combined plan showing how to reach the monthly income target.
+ */
+app.get("/api/portfolio-plan", async (req, res) => {
+  try {
+    const portfolio = await refreshPortfolio();
+    const symbols = (req.query.symbols as string)?.split(",").filter(Boolean).map((s) => s.toUpperCase()) || [];
+
+    if (symbols.length === 0) {
+      return res.status(400).json({ success: false, error: "No symbols provided" });
+    }
+
+    const goalParams: GoalParams = {
+      monthlyTarget: parseFloat(req.query.monthlyTarget as string) || 1000,
+      maxRiskPct: parseFloat(req.query.maxRiskPct as string) || 2,
+      minDTE: parseInt(req.query.minDTE as string, 10) || 14,
+      maxDTE: parseInt(req.query.maxDTE as string, 10) || 60,
+      allowedStrategies: (req.query.strategies as string)?.split(",").filter(Boolean) || [],
+    };
+
+    const netLiq = portfolio.account.netLiquidation || 50_000;
+    const maxCapPerTrade = netLiq * (goalParams.maxRiskPct / 100) * 5; // up to 5x risk for capital
+
+    log.info(`Portfolio Plan: scanning ${symbols.length} symbols for $${goalParams.monthlyTarget}/mo target`);
+
+    // Analyze all symbols in parallel
+    const results = await Promise.allSettled(
+      symbols.map(async (sym) => {
+        const analysis = await runAnalysis(sym, portfolio, goalParams);
+        return {
+          symbol: sym,
+          price: analysis.underlyingPrice,
+          ivRank: analysis.ivRank,
+          strategies: analysis.strategies.slice(0, 5), // top 5 per symbol
+        };
+      })
+    );
+
+    // Collect all candidate strategies from all symbols
+    interface PlanCandidate {
+      symbol: string;
+      name: string;
+      type: string;
+      score: number;
+      maxProfit: number | string;
+      maxLoss: number;
+      expectedProfit: number;
+      capitalRequired: number;
+      riskPct: number;
+      avgDTE: number;
+      legs: any[];
+      factors: any[];
+    }
+
+    const candidates: PlanCandidate[] = [];
+
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const { symbol, strategies } = result.value;
+      for (const s of strategies) {
+        const profit = s.strategy.maxProfit === "unlimited"
+          ? s.strategy.maxLoss * 1.5
+          : s.strategy.maxProfit;
+        // Expected profit: conservative estimate (60% of max profit)
+        const expectedProfit = typeof profit === "number" ? profit * 0.6 : 0;
+
+        const now = Date.now();
+        const legDTEs = s.strategy.legs
+          .map((l) => {
+            if (!l.contract.expiration) return 0;
+            const expMs = new Date(l.contract.expiration).getTime();
+            return Math.round((expMs - now) / (1000 * 60 * 60 * 24));
+          })
+          .filter((d) => d > 0);
+        const avgDTE = legDTEs.length > 0
+          ? Math.round(legDTEs.reduce((a, b) => a + b, 0) / legDTEs.length)
+          : 30;
+
+        candidates.push({
+          symbol,
+          name: s.strategy.name,
+          type: s.strategy.type,
+          score: s.score,
+          maxProfit: s.strategy.maxProfit,
+          maxLoss: s.strategy.maxLoss,
+          expectedProfit,
+          capitalRequired: s.strategy.requiredCapital,
+          riskPct: netLiq > 0 ? (s.strategy.maxLoss / netLiq) * 100 : 0,
+          avgDTE,
+          legs: s.strategy.legs.map((l) => ({
+            symbol: l.contract.symbol,
+            type: l.contract.type,
+            strike: l.contract.strike,
+            expiration: l.contract.expiration,
+            side: l.side,
+            quantity: l.quantity,
+            price: l.price,
+          })),
+          factors: s.factors || [],
+        });
+      }
+    }
+
+    // Sort by efficiency: expected profit relative to capital and risk
+    candidates.sort((a, b) => {
+      const effA = a.capitalRequired > 0 ? (a.expectedProfit / a.capitalRequired) * a.score : 0;
+      const effB = b.capitalRequired > 0 ? (b.expectedProfit / b.capitalRequired) * b.score : 0;
+      return effB - effA;
+    });
+
+    // Greedy selection: pick strategies to maximize profit while respecting constraints
+    const selected: PlanCandidate[] = [];
+    let totalCapital = 0;
+    let totalRisk = 0;
+    let totalExpectedProfit = 0;
+    const symbolCount: Record<string, number> = {};
+    const maxPerSymbol = 2; // max 2 strategies per symbol for diversification
+
+    for (const candidate of candidates) {
+      // Diversification: max N per symbol
+      const symCount = symbolCount[candidate.symbol] || 0;
+      if (symCount >= maxPerSymbol) continue;
+
+      // Capital constraint
+      if (totalCapital + candidate.capitalRequired > netLiq * 0.8) continue; // don't use more than 80% of account
+
+      // Risk constraint: total risk shouldn't exceed monthly target * 3
+      if (totalRisk + candidate.riskPct > goalParams.maxRiskPct * symbols.length) continue;
+
+      selected.push(candidate);
+      totalCapital += candidate.capitalRequired;
+      totalRisk += candidate.riskPct;
+      totalExpectedProfit += candidate.expectedProfit;
+      symbolCount[candidate.symbol] = symCount + 1;
+
+      // If we've reached the target, stop
+      if (totalExpectedProfit >= goalParams.monthlyTarget) break;
+
+      // Max 10 simultaneous positions
+      if (selected.length >= 10) break;
+    }
+
+    // Calculate how many cycles needed per month
+    const avgDTE = selected.length > 0
+      ? Math.round(selected.reduce((s, c) => s + c.avgDTE, 0) / selected.length)
+      : 30;
+    const cyclesPerMonth = avgDTE > 0 ? Math.max(1, Math.floor(30 / avgDTE)) : 1;
+    const projectedMonthly = totalExpectedProfit * cyclesPerMonth;
+    const progressPct = goalParams.monthlyTarget > 0
+      ? Math.min((projectedMonthly / goalParams.monthlyTarget) * 100, 150)
+      : 0;
+
+    log.info(
+      `Portfolio Plan result: ${selected.length} strategies, ` +
+      `projected $${projectedMonthly.toFixed(0)}/mo (${progressPct.toFixed(0)}% of target), ` +
+      `capital: $${totalCapital.toFixed(0)}, risk: ${totalRisk.toFixed(1)}%`
+    );
+
+    res.json({
+      success: true,
+      data: {
+        monthlyTarget: goalParams.monthlyTarget,
+        projectedMonthly: Math.round(projectedMonthly),
+        progressPct: Math.round(progressPct),
+        totalCapitalRequired: Math.round(totalCapital),
+        totalRiskPct: parseFloat(totalRisk.toFixed(1)),
+        cyclesPerMonth,
+        avgDTE,
+        symbolsScanned: symbols.length,
+        candidatesFound: candidates.length,
+        selectedStrategies: selected.map((s, i) => ({
+          ...s,
+          idx: i,
+          capitalRequired: Math.round(s.capitalRequired),
+          expectedProfit: Math.round(s.expectedProfit),
+        })),
+        perSymbol: symbols.map((sym) => {
+          const symStrats = selected.filter((s) => s.symbol === sym);
+          const result = results.find(
+            (r) => r.status === "fulfilled" && r.value.symbol === sym
+          );
+          const price = result?.status === "fulfilled" ? result.value.price : 0;
+          const ivRank = result?.status === "fulfilled" ? result.value.ivRank : 0;
+          return {
+            symbol: sym,
+            price,
+            ivRank,
+            strategiesSelected: symStrats.length,
+            totalProfit: symStrats.reduce((s, c) => s + c.expectedProfit, 0),
+          };
+        }),
+      },
+    });
+  } catch (err) {
+    log.error("Portfolio plan failed", { error: err });
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ── Serve React Dashboard ───────────────────────────────────
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dashboard", "index.html"));
