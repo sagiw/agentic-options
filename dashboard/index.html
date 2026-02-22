@@ -1000,6 +1000,46 @@ function PositionsTable({ positions }) {
   const [expandedStrategy, setExpandedStrategy] = useState(null);
   const [closeStatus, setCloseStatus] = useState({}); // { [key]: "confirming"|"submitting"|"success"|"error" }
   const [closeMessage, setCloseMessage] = useState({}); // { [key]: string }
+  const [liveNBBO, setLiveNBBO] = useState({}); // { [cacheKey]: { bid, ask, mid, last } | "loading" }
+
+  // ── Fetch live IBKR NBBO when a losing position is expanded ──
+  useEffect(() => {
+    if (expandedPos == null) return;
+    const p = positions[expandedPos];
+    if (!p) return;
+    const type = p.contract.type;
+    const isOption = type === "call" || type === "put";
+    if (!isOption) return;
+    const pnl = p.unrealizedPnL || 0;
+    if (pnl >= 0) return; // only for losing positions with recovery options
+
+    const underlying = p.contract.underlying || (p.contract.symbol || "").replace(/\d.*/, "") || p.contract.symbol;
+    const right = type === "call" ? "C" : "P";
+    const rollStrikeDiff = 5;
+    const newExpDate = nextMonthlyExpiration(21);
+    const newExpISO = newExpDate.toISOString();
+
+    // Roll Out target: same strike, new expiration
+    const rollOutKey = `${underlying}-${right}-${p.contract.strike}-${newExpDate.getTime()}`;
+    // Roll shift target: shifted strike, new expiration
+    const shiftedStrike = type === "put" ? p.contract.strike - rollStrikeDiff : p.contract.strike + rollStrikeDiff;
+    const rollShiftKey = `${underlying}-${right}-${shiftedStrike}-${newExpDate.getTime()}`;
+
+    const fetchIfNeeded = async (key, symbol, strike, optRight, expiration) => {
+      // Skip if already loaded or loading
+      if (liveNBBO[key] && liveNBBO[key] !== "error") return;
+      setLiveNBBO(prev => ({ ...prev, [key]: "loading" }));
+      try {
+        const data = await fetchRollNBBO(symbol, strike, optRight, expiration);
+        setLiveNBBO(prev => ({ ...prev, [key]: data || "error" }));
+      } catch {
+        setLiveNBBO(prev => ({ ...prev, [key]: "error" }));
+      }
+    };
+
+    fetchIfNeeded(rollOutKey, underlying, p.contract.strike, right, newExpISO);
+    fetchIfNeeded(rollShiftKey, underlying, shiftedStrike, right, newExpISO);
+  }, [expandedPos, positions]);
 
   const handleClose = async (key, legs) => {
     if (closeStatus[key] !== "confirming") {
@@ -1767,13 +1807,36 @@ function PositionsTable({ positions }) {
                           estimateRolledPrice(currentPerShare, daysToExp, newDTECalc, 0, posDelta),
                           underlying
                         );
-                        // These will be updated by live NBBO if available
-                        let rollOutNewPrice = rollOutEstPrice;
-                        let rollShiftEstPrice = roundTick(
+                        // Roll Shift: shifted strike, later exp
+                        const rollShiftEstPrice = roundTick(
                           estimateRolledPrice(currentPerShare, daysToExp, newDTECalc, rollStrikeDiff, posDelta),
                           underlying
                         );
-                        let rollShiftNewPrice = rollShiftEstPrice;
+
+                        // ── Live IBKR NBBO override (when available) ──
+                        const rightChar = type === "call" ? "C" : "P";
+                        const shiftedStrikeCalc = type === "put"
+                          ? p.contract.strike - rollStrikeDiff
+                          : p.contract.strike + rollStrikeDiff;
+                        const rollOutNBBOKey = `${underlying}-${rightChar}-${p.contract.strike}-${newExpDate.getTime()}`;
+                        const rollShiftNBBOKey = `${underlying}-${rightChar}-${shiftedStrikeCalc}-${newExpDate.getTime()}`;
+                        const rollOutLive = liveNBBO[rollOutNBBOKey];
+                        const rollShiftLive = liveNBBO[rollShiftNBBOKey];
+
+                        const rollOutIsLive = rollOutLive && rollOutLive !== "loading" && rollOutLive !== "error" && rollOutLive.mid > 0;
+                        const rollShiftIsLive = rollShiftLive && rollShiftLive !== "loading" && rollShiftLive !== "error" && rollShiftLive.mid > 0;
+                        const rollOutLoading = rollOutLive === "loading";
+                        const rollShiftLoading = rollShiftLive === "loading";
+
+                        const rollOutNewPrice = rollOutIsLive
+                          ? roundTick(rollOutLive.mid, underlying)
+                          : rollOutEstPrice;
+                        const rollShiftNewPrice = rollShiftIsLive
+                          ? roundTick(rollShiftLive.mid, underlying)
+                          : rollShiftEstPrice;
+
+                        const rollOutPriceLabel = rollOutIsLive ? "IBKR live" : rollOutLoading ? "loading…" : "est.";
+                        const rollShiftPriceLabel = rollShiftIsLive ? "IBKR live" : rollShiftLoading ? "loading…" : "est.";
 
                         const rollOutNetCredit = isSold
                           ? (rollOutNewPrice - currentPerShare)
@@ -1806,10 +1869,10 @@ function PositionsTable({ positions }) {
                             desc: `Buy to close the current ${type} and sell a new ${type} at the SAME strike ($${p.contract.strike}) but with a LATER expiration. Target: ${newExpStr} (${newDTECalc}d, IBKR: ${newExpIBKR}).`,
                             steps: [
                               `BUY to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh (current market)`,
-                              `SELL to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp **${newExpStr}** (${newExpIBKR}) @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
+                              `SELL to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp **${newExpStr}** (${newExpIBKR}) @ **${fmt.usd(rollOutNewPrice)}**/sh (${rollOutPriceLabel})`,
                               `Target expiration: **${newExpStr}** — standard monthly (3rd Friday), ${newDTECalc} DTE`,
-                              `Est. net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollOutNetPnL)}`,
-                              `⚠️ Prices are estimates — actual order uses IBKR real-time NBBO`,
+                              `Net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollOutNetPnL)}`,
+                              rollOutIsLive ? `✅ Price from IBKR real-time NBBO (bid $${rollOutLive.bid} / ask $${rollOutLive.ask})` : `⚠️ Price is a theoretical estimate — click Execute to use IBKR real-time NBBO`,
                             ],
                             canProfit: true,
                             rollLegs: [
@@ -1835,6 +1898,10 @@ function PositionsTable({ positions }) {
                             newExpIBKR: newExpIBKR,
                             newDTE: newDTECalc,
                             newPrice: rollOutNewPrice,
+                            isLive: rollOutIsLive,
+                            isLoading: rollOutLoading,
+                            liveBid: rollOutIsLive ? rollOutLive.bid : null,
+                            liveAsk: rollOutIsLive ? rollOutLive.ask : null,
                           });
                           if (type === "put") {
                             recoveryOptions.push({
@@ -1843,11 +1910,11 @@ function PositionsTable({ positions }) {
                               desc: `Buy to close the current put ($${p.contract.strike}) and sell a new put at a LOWER strike ($${shiftedStrike}) with exp ${newExpStr} (${newExpIBKR}). Reduces risk by moving the strike further from the current price.`,
                               steps: [
                                 `BUY to Close: ${underlying} PUT $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh (current market)`,
-                                `SELL to Open: ${underlying} PUT $${shiftedStrike} exp **${newExpStr}** (${newExpIBKR}) @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
+                                `SELL to Open: ${underlying} PUT $${shiftedStrike} exp **${newExpStr}** (${newExpIBKR}) @ **${fmt.usd(rollShiftNewPrice)}**/sh (${rollShiftPriceLabel})`,
                                 `Target expiration: **${newExpStr}** — standard monthly (3rd Friday), ${newDTECalc} DTE`,
-                                `Est. net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollShiftNetPnL)}`,
+                                `Net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollShiftNetPnL)}`,
                                 `New strike $${shiftedStrike} gives more safety margin`,
-                                `⚠️ Prices are estimates — actual order uses IBKR real-time NBBO`,
+                                rollShiftIsLive ? `✅ Price from IBKR real-time NBBO (bid $${rollShiftLive.bid} / ask $${rollShiftLive.ask})` : `⚠️ Price is a theoretical estimate — click Execute to use IBKR real-time NBBO`,
                               ],
                               canProfit: true,
                               rollLegs: [
@@ -1873,6 +1940,10 @@ function PositionsTable({ positions }) {
                               newExpIBKR: newExpIBKR,
                               newDTE: newDTECalc,
                               newPrice: rollShiftNewPrice,
+                              isLive: rollShiftIsLive,
+                              isLoading: rollShiftLoading,
+                              liveBid: rollShiftIsLive ? rollShiftLive.bid : null,
+                              liveAsk: rollShiftIsLive ? rollShiftLive.ask : null,
                             });
                           } else {
                             recoveryOptions.push({
@@ -1881,11 +1952,11 @@ function PositionsTable({ positions }) {
                               desc: `Buy to close the current call ($${p.contract.strike}) and sell a new call at a HIGHER strike ($${shiftedStrike}) with exp ${newExpStr} (${newExpIBKR}). Moves the strike further above current price.`,
                               steps: [
                                 `BUY to Close: ${underlying} CALL $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh (current market)`,
-                                `SELL to Open: ${underlying} CALL $${shiftedStrike} exp **${newExpStr}** (${newExpIBKR}) @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
+                                `SELL to Open: ${underlying} CALL $${shiftedStrike} exp **${newExpStr}** (${newExpIBKR}) @ **${fmt.usd(rollShiftNewPrice)}**/sh (${rollShiftPriceLabel})`,
                                 `Target expiration: **${newExpStr}** — standard monthly (3rd Friday), ${newDTECalc} DTE`,
-                                `Est. net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollShiftNetPnL)}`,
+                                `Net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollShiftNetPnL)}`,
                                 `New strike $${shiftedStrike} gives more safety margin`,
-                                `⚠️ Prices are estimates — actual order uses IBKR real-time NBBO`,
+                                rollShiftIsLive ? `✅ Price from IBKR real-time NBBO (bid $${rollShiftLive.bid} / ask $${rollShiftLive.ask})` : `⚠️ Price is a theoretical estimate — click Execute to use IBKR real-time NBBO`,
                               ],
                               canProfit: true,
                               rollLegs: [
@@ -1911,6 +1982,10 @@ function PositionsTable({ positions }) {
                               newExpIBKR: newExpIBKR,
                               newDTE: newDTECalc,
                               newPrice: rollShiftNewPrice,
+                              isLive: rollShiftIsLive,
+                              isLoading: rollShiftLoading,
+                              liveBid: rollShiftIsLive ? rollShiftLive.bid : null,
+                              liveAsk: rollShiftIsLive ? rollShiftLive.ask : null,
                             });
                           }
                           recoveryOptions.push({
@@ -1948,11 +2023,11 @@ function PositionsTable({ positions }) {
                             desc: `Sell your current ${type} and buy a new one at the same strike ($${p.contract.strike}) but with more time. Target: ${newExpStr} (${newExpIBKR}).`,
                             steps: [
                               `SELL to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh (current market)`,
-                              `BUY to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp **${newExpStr}** (${newExpIBKR}) @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
+                              `BUY to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp **${newExpStr}** (${newExpIBKR}) @ **${fmt.usd(rollOutNewPrice)}**/sh (${rollOutPriceLabel})`,
                               `Target expiration: **${newExpStr}** — standard monthly (3rd Friday), ${newDTECalc} DTE`,
-                              `Est. net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollOutNetPnL)}`,
+                              `Net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh × ${Math.abs(p.quantity)} contracts = ${fmtSignUsd(rollOutNetPnL)}`,
                               `${rollOutNetPnL < 0 ? "Additional cost to roll: " + fmt.usd(Math.abs(rollOutNetPnL)) + " — but buys more time" : "Net credit from the roll"}`,
-                              `⚠️ Prices are estimates — actual order uses IBKR real-time NBBO`,
+                              rollOutIsLive ? `✅ Price from IBKR real-time NBBO (bid $${rollOutLive.bid} / ask $${rollOutLive.ask})` : `⚠️ Price is a theoretical estimate — click Execute to use IBKR real-time NBBO`,
                             ],
                             canProfit: true,
                             rollLegs: [
@@ -1978,6 +2053,10 @@ function PositionsTable({ positions }) {
                             newExpIBKR: newExpIBKR,
                             newDTE: newDTECalc,
                             newPrice: rollOutNewPrice,
+                            isLive: rollOutIsLive,
+                            isLoading: rollOutLoading,
+                            liveBid: rollOutIsLive ? rollOutLive.bid : null,
+                            liveAsk: rollOutIsLive ? rollOutLive.ask : null,
                           });
                           recoveryOptions.push({
                             name: "Sell a Spread (Reduce Cost)",
@@ -2068,7 +2147,7 @@ function PositionsTable({ positions }) {
                                     border: `1px solid ${opt.netPnL >= 0 ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.2)"}`,
                                   }}>
                                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 6 }}>
-                                      <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
+                                      <div style={{ display: "flex", gap: 16, fontSize: 12, flexWrap: "wrap" }}>
                                         <div>
                                           <span style={{ color: "var(--text-muted)" }}>New Strike: </span>
                                           <span style={{ fontWeight: 700 }}>${opt.newStrike}</span>
@@ -2082,9 +2161,28 @@ function PositionsTable({ positions }) {
                                           <span style={{ fontWeight: 700, fontFamily: "monospace" }}>{opt.newExpIBKR}</span>
                                         </div>
                                         <div>
-                                          <span style={{ color: "var(--text-muted)" }}>Est. Price: </span>
+                                          <span style={{ color: "var(--text-muted)" }}>Price: </span>
                                           <span style={{ fontWeight: 700 }}>{fmt.usd(opt.newPrice)}/sh</span>
+                                          {opt.isLive && (
+                                            <span style={{
+                                              marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                                              background: "rgba(16,185,129,0.2)", color: "var(--accent-green)", fontWeight: 700,
+                                            }}>LIVE</span>
+                                          )}
+                                          {opt.isLoading && (
+                                            <span style={{
+                                              marginLeft: 4, fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                                              background: "rgba(245,158,11,0.2)", color: "var(--accent-amber)", fontWeight: 600,
+                                              animation: "pulse 1s infinite",
+                                            }}>loading…</span>
+                                          )}
                                         </div>
+                                        {opt.isLive && opt.liveBid != null && (
+                                          <div>
+                                            <span style={{ color: "var(--text-muted)" }}>Bid/Ask: </span>
+                                            <span style={{ fontWeight: 700 }}>${opt.liveBid} / ${opt.liveAsk}</span>
+                                          </div>
+                                        )}
                                       </div>
                                       <div style={{
                                         padding: "4px 12px", borderRadius: 6, fontWeight: 800, fontSize: 14,
@@ -2095,8 +2193,10 @@ function PositionsTable({ positions }) {
                                       </div>
                                     </div>
                                     <div style={{ fontSize: 10, color: "var(--text-muted)", fontStyle: "italic" }}>
-                                      💡 Price is a theoretical estimate (sqrt time + delta). Actual execution at IBKR real-time NBBO mid-price.
-                                      {opt.newDTE ? ` New position: ${opt.newDTE} DTE.` : ""}
+                                      {opt.isLive
+                                        ? `✅ Price from IBKR real-time NBBO snapshot. New position: ${opt.newDTE || "?"} DTE.`
+                                        : `💡 Price is a theoretical estimate (sqrt time + delta). Actual execution at IBKR real-time NBBO mid-price.${opt.newDTE ? ` New position: ${opt.newDTE} DTE.` : ""}`
+                                      }
                                     </div>
                                   </div>
                                 )}
