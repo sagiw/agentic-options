@@ -884,17 +884,26 @@ async function submitCloseOrder(legs) {
 }
 
 // ── Estimate rolled option price ──
-// Uses sqrt(time) relationship for time value + delta adjustment for strike changes
-function estimateRolledPrice(currentPrice, currentDTE, newDTE, strikeDiff, currentStrike) {
+// Uses sqrt(time) relationship for time value + delta-based strike adjustment
+// delta: the option's Greek delta (absolute value used). If unavailable, 0.35 is assumed.
+function estimateRolledPrice(currentPrice, currentDTE, newDTE, strikeDiff, delta) {
   if (!currentPrice || currentPrice <= 0) return 0;
   const safeDTE = Math.max(currentDTE || 1, 1);
-  // Time value scales with sqrt(DTE)
+  // Time value scales approximately with sqrt(DTE)
   const timeScaled = currentPrice * Math.sqrt(Math.max(newDTE, 1) / safeDTE);
-  // Strike shift effect: each $1 further OTM reduces value by ~delta (~0.3)
-  const strikeFactor = strikeDiff !== 0 && currentStrike > 0
-    ? Math.max(0.3, 1 - 0.3 * Math.abs(strikeDiff) / currentStrike)
-    : 1;
-  return timeScaled * strikeFactor;
+  // Strike shift: moving further OTM reduces value by approx. delta × strikeDiff
+  if (strikeDiff !== 0) {
+    const effectiveDelta = delta ? Math.abs(delta) : 0.35;
+    return Math.max(0.01, timeScaled - effectiveDelta * Math.abs(strikeDiff));
+  }
+  return timeScaled;
+}
+
+// ── Format signed USD: "+$3.50" or "-$1.20" ──
+function fmtSignUsd(v) {
+  if (v == null) return "—";
+  const prefix = v >= 0 ? "+" : "-";
+  return prefix + "$" + Math.abs(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 // ── Calculate future expiration date (+N days from current exp) ──
@@ -1718,10 +1727,11 @@ function PositionsTable({ positions }) {
                         const newExpDate = futureExpDate(p.contract.expiration, rollAddDays);
                         const newDTE = daysToExp != null ? daysToExp + rollAddDays : rollAddDays;
                         const mult = p.contract.multiplier || 100;
+                        const posDelta = p.greeks?.delta; // use actual Greek if available
 
                         // Roll Out: same strike, later exp
                         const rollOutNewPrice = roundTick(
-                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, 0, p.contract.strike),
+                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, 0, posDelta),
                           underlying
                         );
                         const rollOutNetCredit = isSold
@@ -1734,7 +1744,7 @@ function PositionsTable({ positions }) {
                           ? p.contract.strike - rollStrikeDiff
                           : p.contract.strike + rollStrikeDiff;
                         const rollShiftNewPrice = roundTick(
-                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, rollStrikeDiff, p.contract.strike),
+                          estimateRolledPrice(currentPerShare, daysToExp, newDTE, rollStrikeDiff, posDelta),
                           underlying
                         );
                         const rollShiftNetCredit = isSold
@@ -1758,8 +1768,8 @@ function PositionsTable({ positions }) {
                             steps: [
                               `BUY to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
                               `SELL to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp ${newExpStr} @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
-                              `Estimated net credit: ${rollOutNetCredit >= 0 ? "+" : ""}${fmt.usd(rollOutNetCredit)}/sh per contract`,
-                              `Estimated total P&L impact: ${rollOutNetPnL >= 0 ? "+" : ""}${fmt.usd(rollOutNetPnL)}`,
+                              `Estimated net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh per contract`,
+                              `Estimated total P&L impact: ${fmtSignUsd(rollOutNetPnL)}`,
                             ],
                             canProfit: true,
                             rollLegs: [
@@ -1792,8 +1802,8 @@ function PositionsTable({ positions }) {
                               steps: [
                                 `BUY to Close: ${underlying} PUT $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
                                 `SELL to Open: ${underlying} PUT $${shiftedStrike} exp ${newExpStr} @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
-                                `Estimated net credit: ${rollShiftNetCredit >= 0 ? "+" : ""}${fmt.usd(rollShiftNetCredit)}/sh per contract`,
-                                `Estimated total P&L impact: ${rollShiftNetPnL >= 0 ? "+" : ""}${fmt.usd(rollShiftNetPnL)}`,
+                                `Estimated net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh per contract`,
+                                `Estimated total P&L impact: ${fmtSignUsd(rollShiftNetPnL)}`,
                                 `New strike $${shiftedStrike} gives more safety margin`,
                               ],
                               canProfit: true,
@@ -1827,8 +1837,8 @@ function PositionsTable({ positions }) {
                               steps: [
                                 `BUY to Close: ${underlying} CALL $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
                                 `SELL to Open: ${underlying} CALL $${shiftedStrike} exp ${newExpStr} @ ~${fmt.usd(rollShiftNewPrice)}/sh (est.)`,
-                                `Estimated net credit: ${rollShiftNetCredit >= 0 ? "+" : ""}${fmt.usd(rollShiftNetCredit)}/sh per contract`,
-                                `Estimated total P&L impact: ${rollShiftNetPnL >= 0 ? "+" : ""}${fmt.usd(rollShiftNetPnL)}`,
+                                `Estimated net ${rollShiftNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollShiftNetCredit)}/sh per contract`,
+                                `Estimated total P&L impact: ${fmtSignUsd(rollShiftNetPnL)}`,
                                 `New strike $${shiftedStrike} gives more safety margin`,
                               ],
                               canProfit: true,
@@ -1891,9 +1901,9 @@ function PositionsTable({ positions }) {
                             steps: [
                               `SELL to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} @ ~${fmt.usd(currentPerShare)}/sh`,
                               `BUY to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} exp ${newExpStr} @ ~${fmt.usd(rollOutNewPrice)}/sh (est.)`,
-                              `Estimated net debit: ${fmt.usd(Math.abs(rollOutNetCredit))}/sh per contract`,
-                              `Estimated additional cost: ${fmt.usd(Math.abs(rollOutNetPnL))}`,
-                              `This resets the clock but at additional cost`,
+                              `Estimated net ${rollOutNetCredit >= 0 ? "credit" : "debit"}: ${fmtSignUsd(rollOutNetCredit)}/sh per contract`,
+                              `Estimated total P&L impact: ${fmtSignUsd(rollOutNetPnL)}`,
+                              `This resets the clock${rollOutNetPnL < 0 ? " at additional cost of " + fmt.usd(Math.abs(rollOutNetPnL)) : ""}`,
                             ],
                             canProfit: true,
                             rollLegs: [
@@ -2026,7 +2036,7 @@ function PositionsTable({ positions }) {
                                       background: opt.netPnL >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
                                       color: opt.netPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
                                     }}>
-                                      {opt.netPnL >= 0 ? "Credit" : "Debit"}: {opt.netPnL >= 0 ? "+" : ""}{fmt.usd(opt.netPnL)}
+                                      {opt.netPnL >= 0 ? "Credit" : "Debit"}: {fmtSignUsd(opt.netPnL)}
                                     </div>
                                   </div>
                                 )}
