@@ -292,8 +292,8 @@ export function scoreStrategy(
   factors.push({
     name: "Risk/Reward Ratio",
     value: riskReward,
-    weight: 0.3,
-    contribution: Math.min(riskReward / 3, 1) * 30,
+    weight: 0.25,
+    contribution: Math.min(riskReward / 3, 1) * 25,
   });
 
   // 2. Capital efficiency (lower required capital = better for small accounts)
@@ -301,8 +301,8 @@ export function scoreStrategy(
   factors.push({
     name: "Capital Efficiency",
     value: capitalEfficiency,
-    weight: 0.25,
-    contribution: Math.min(capitalEfficiency, 1) * 25,
+    weight: 0.2,
+    contribution: Math.min(capitalEfficiency, 1) * 20,
   });
 
   // 3. IV Rank alignment (sell strategies better in high IV, buy in low IV)
@@ -311,8 +311,8 @@ export function scoreStrategy(
   factors.push({
     name: "IV Rank Alignment",
     value: ivAlignment,
-    weight: 0.25,
-    contribution: ivAlignment * 25,
+    weight: 0.2,
+    contribution: ivAlignment * 20,
   });
 
   // 4. Defined risk bonus (strategies with defined max loss score higher)
@@ -320,8 +320,32 @@ export function scoreStrategy(
   factors.push({
     name: "Defined Risk",
     value: definedRisk,
+    weight: 0.15,
+    contribution: definedRisk * 15,
+  });
+
+  // 5. DTE sweet spot: 30-45 days is optimal for theta decay.
+  //    Score peaks at 37 DTE and drops off as we move away.
+  const now = Date.now();
+  const legDTEs = strategy.legs
+    .map((l) => {
+      if (!l.contract.expiration) return 0;
+      return Math.round((new Date(l.contract.expiration).getTime() - now) / (1000 * 60 * 60 * 24));
+    })
+    .filter((d) => d > 0);
+  const avgDTE = legDTEs.length > 0
+    ? legDTEs.reduce((a, b) => a + b, 0) / legDTEs.length
+    : 30;
+
+  // Bell curve centered at 37 DTE, with reasonable falloff
+  const idealDTE = 37;
+  const dteDeviation = Math.abs(avgDTE - idealDTE) / idealDTE;
+  const dteFit = Math.max(0, 1 - dteDeviation); // 0-1 scale
+  factors.push({
+    name: "DTE Sweet Spot",
+    value: avgDTE,
     weight: 0.2,
-    contribution: definedRisk * 20,
+    contribution: dteFit * 20,
   });
 
   const score = factors.reduce((sum, f) => sum + f.contribution, 0);
@@ -401,5 +425,37 @@ export function findStrategies(
   }
 
   // Sort by score descending
-  return results.sort((a, b) => b.score - a.score);
+  results.sort((a, b) => b.score - a.score);
+
+  // ── Expiration diversity: round-robin selection across expiration dates ──
+  // Without this, all top recommendations converge on the same DTE because
+  // similar strategy types at different expirations get nearly identical scores.
+  // Round-robin ensures the user gets recommendations across multiple dates.
+  if (expirations.length > 1 && results.length > expirations.length) {
+    const byExpiration = new Map<number, RankedStrategy[]>();
+    for (const r of results) {
+      const expMs = r.strategy.legs[0]?.contract.expiration?.getTime() ?? 0;
+      if (!byExpiration.has(expMs)) byExpiration.set(expMs, []);
+      byExpiration.get(expMs)!.push(r);
+    }
+
+    // Round-robin: pick the best from each expiration, then second-best, etc.
+    const diverse: RankedStrategy[] = [];
+    const iterators = Array.from(byExpiration.values()).map((arr) => arr[Symbol.iterator]());
+    let exhausted = 0;
+    while (exhausted < iterators.length && diverse.length < results.length) {
+      for (const iter of iterators) {
+        const next = iter.next();
+        if (!next.done) {
+          diverse.push(next.value);
+        } else {
+          exhausted++;
+        }
+      }
+    }
+
+    return diverse;
+  }
+
+  return results;
 }
