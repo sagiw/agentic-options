@@ -202,6 +202,68 @@
     }
     .btn-analyze:hover { background: #2563eb; }
     .btn-analyze:disabled { opacity: 0.5; cursor: not-allowed; }
+    /* Goals panel */
+    .goals-panel {
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px; margin-bottom: 16px;
+    }
+    .goals-toggle {
+      display: flex; justify-content: space-between; align-items: center;
+      cursor: pointer;
+    }
+    .goals-toggle-title {
+      font-size: 13px; font-weight: 700; color: var(--accent-purple);
+      display: flex; align-items: center; gap: 8px;
+    }
+    .goals-toggle-arrow {
+      color: var(--text-muted); font-size: 12px; transition: transform 0.2s;
+    }
+    .goals-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+      margin-top: 14px;
+    }
+    .goal-field label {
+      display: block; font-size: 11px; color: var(--text-muted);
+      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 4px;
+    }
+    .goal-field input, .goal-field select {
+      background: rgba(0,0,0,0.2); border: 1px solid var(--border);
+      color: var(--text-primary); padding: 7px 10px; border-radius: 6px;
+      font-family: inherit; font-size: 13px; width: 100%; outline: none;
+    }
+    .goal-field input:focus, .goal-field select:focus { border-color: var(--accent-purple); }
+    .goal-strat-chips {
+      display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px;
+    }
+    .goal-chip {
+      padding: 4px 10px; border-radius: 6px; font-size: 11px;
+      font-weight: 600; cursor: pointer; border: 1px solid var(--border);
+      background: transparent; color: var(--text-muted); transition: all 0.15s;
+      font-family: inherit;
+    }
+    .goal-chip.active {
+      background: rgba(139,92,246,0.15); border-color: rgba(139,92,246,0.4);
+      color: var(--accent-purple);
+    }
+    .goal-chip:hover { border-color: var(--accent-purple); }
+    .goal-progress-bar {
+      background: rgba(0,0,0,0.2); border-radius: 6px; height: 8px;
+      overflow: hidden; margin-top: 4px;
+    }
+    .goal-progress-fill {
+      height: 100%; border-radius: 6px; transition: width 0.4s ease;
+      background: linear-gradient(90deg, var(--accent-purple), var(--accent-cyan));
+    }
+    .goal-summary {
+      background: rgba(139,92,246,0.06); border: 1px solid rgba(139,92,246,0.15);
+      border-radius: 10px; padding: 14px; margin-bottom: 14px;
+      display: flex; gap: 20px; align-items: center; flex-wrap: wrap;
+    }
+    .goal-summary-item {
+      display: flex; flex-direction: column; gap: 2px;
+    }
+    .goal-summary-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+    .goal-summary-value { font-size: 18px; font-weight: 700; }
     /* Loading */
     .loading { text-align: center; padding: 40px; color: var(--text-muted); }
     .spinner { display: inline-block; width: 24px; height: 24px; border: 2px solid var(--border);
@@ -1267,6 +1329,14 @@ function App() {
   const [activeTab, setActiveTab] = useState("portfolio");
   const [orders, setOrders] = useState([]);
   const [toasts, setToasts] = useState([]);
+  const [goalsOpen, setGoalsOpen] = useState(false);
+  const [goals, setGoals] = useState({
+    monthlyTarget: 1000,
+    maxRiskPct: 2,
+    minDTE: 14,
+    maxDTE: 60,
+    strategies: ["bull_call_spread", "bear_put_spread", "iron_condor", "cash_secured_put"],
+  });
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -1284,10 +1354,18 @@ function App() {
   const analyze = useCallback(async () => {
     setAnalyzing(true);
     setSelectedStrategy(0);
-    const r = await apiFetch(`/recommendations?symbol=${symbol}`);
+    const params = new URLSearchParams({
+      symbol,
+      monthlyTarget: String(goals.monthlyTarget),
+      maxRiskPct: String(goals.maxRiskPct),
+      minDTE: String(goals.minDTE),
+      maxDTE: String(goals.maxDTE),
+      strategies: goals.strategies.join(","),
+    });
+    const r = await apiFetch(`/recommendations?${params}`);
     if (r) setRecommendations(r);
     setAnalyzing(false);
-  }, [symbol]);
+  }, [symbol, goals]);
 
   const addToast = useCallback((type, title, message) => {
     const id = Date.now();
@@ -1529,6 +1607,127 @@ function App() {
       {/* ── Analysis Tab ──────────────────────────── */}
       {activeTab === "analysis" && (
         <div>
+          {/* Goals panel */}
+          <div className="goals-panel">
+            <div className="goals-toggle" onClick={() => setGoalsOpen(!goalsOpen)}>
+              <div className="goals-toggle-title">
+                <span style={{ fontSize: 16 }}>🎯</span>
+                Trading Goals
+                <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>
+                  — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d
+                </span>
+              </div>
+              <span className="goals-toggle-arrow" style={{ transform: goalsOpen ? "rotate(180deg)" : "rotate(0)" }}>▼</span>
+            </div>
+            {goalsOpen && (
+              <div className="goals-grid">
+                <div className="goal-field">
+                  <label>Monthly Income Target ($)</label>
+                  <input type="number" value={goals.monthlyTarget} min={100} step={100}
+                    onChange={(e) => setGoals({ ...goals, monthlyTarget: Number(e.target.value) || 0 })} />
+                </div>
+                <div className="goal-field">
+                  <label>Max Risk Per Trade (%)</label>
+                  <input type="number" value={goals.maxRiskPct} min={0.5} max={10} step={0.5}
+                    onChange={(e) => setGoals({ ...goals, maxRiskPct: Number(e.target.value) || 2 })} />
+                </div>
+                <div className="goal-field">
+                  <label>Min Days to Expiration</label>
+                  <input type="number" value={goals.minDTE} min={1} max={365} step={1}
+                    onChange={(e) => setGoals({ ...goals, minDTE: Number(e.target.value) || 14 })} />
+                </div>
+                <div className="goal-field">
+                  <label>Max Days to Expiration</label>
+                  <input type="number" value={goals.maxDTE} min={1} max={365} step={1}
+                    onChange={(e) => setGoals({ ...goals, maxDTE: Number(e.target.value) || 60 })} />
+                </div>
+                <div className="goal-field" style={{ gridColumn: "1 / -1" }}>
+                  <label>Allowed Strategy Types</label>
+                  <div className="goal-strat-chips">
+                    {[
+                      { id: "bull_call_spread", label: "Bull Call Spread" },
+                      { id: "bear_put_spread", label: "Bear Put Spread" },
+                      { id: "iron_condor", label: "Iron Condor" },
+                      { id: "cash_secured_put", label: "Cash Secured Put" },
+                    ].map((st) => (
+                      <button key={st.id}
+                        className={`goal-chip ${goals.strategies.includes(st.id) ? "active" : ""}`}
+                        onClick={() => {
+                          const has = goals.strategies.includes(st.id);
+                          if (has && goals.strategies.length <= 1) return; // keep at least one
+                          setGoals({
+                            ...goals,
+                            strategies: has
+                              ? goals.strategies.filter((s) => s !== st.id)
+                              : [...goals.strategies, st.id],
+                          });
+                        }}>
+                        {st.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Goal progress summary (shown after analysis) */}
+          {recommendations?.strategies?.length > 0 && (() => {
+            const netLiq = recommendations?.account?.netLiquidation || acct.netLiquidation || 50000;
+            const bestStrat = strategies[0];
+            const avgProfit = bestStrat
+              ? (bestStrat.maxProfit === "unlimited" ? bestStrat.maxLoss * 1.5 : (bestStrat.maxProfit * 0.6))
+              : 0;
+            const maxPerMonth = netLiq * (goals.maxRiskPct / 100);
+            const tradesPerMonth = avgProfit > 0 ? Math.ceil(goals.monthlyTarget / avgProfit) : 0;
+            const projectedMonthly = avgProfit * Math.min(tradesPerMonth, 12);
+            const progressPct = Math.min((projectedMonthly / goals.monthlyTarget) * 100, 100);
+
+            return (
+              <div className="goal-summary">
+                <div className="goal-summary-item">
+                  <span className="goal-summary-label">Monthly Target</span>
+                  <span className="goal-summary-value" style={{ color: "var(--accent-purple)" }}>
+                    ${goals.monthlyTarget.toLocaleString()}
+                  </span>
+                </div>
+                <div className="goal-summary-item">
+                  <span className="goal-summary-label">Est. Profit/Trade</span>
+                  <span className="goal-summary-value" style={{ color: "var(--accent-green)" }}>
+                    {fmt.usd(avgProfit)}
+                  </span>
+                </div>
+                <div className="goal-summary-item">
+                  <span className="goal-summary-label">Trades Needed/Mo</span>
+                  <span className="goal-summary-value" style={{ color: "var(--accent-cyan)" }}>
+                    {tradesPerMonth > 0 ? tradesPerMonth : "—"}
+                  </span>
+                </div>
+                <div className="goal-summary-item">
+                  <span className="goal-summary-label">Max Capital/Trade</span>
+                  <span className="goal-summary-value" style={{ color: "var(--accent-amber)" }}>
+                    {fmt.usd(maxPerMonth)}
+                  </span>
+                </div>
+                <div className="goal-summary-item" style={{ flex: 1, minWidth: 150 }}>
+                  <span className="goal-summary-label">
+                    Projected Monthly: {fmt.usd(projectedMonthly)} ({progressPct.toFixed(0)}% of goal)
+                  </span>
+                  <div className="goal-progress-bar">
+                    <div className="goal-progress-fill" style={{
+                      width: progressPct + "%",
+                      background: progressPct >= 100
+                        ? "var(--accent-green)"
+                        : progressPct >= 50
+                        ? "linear-gradient(90deg, var(--accent-purple), var(--accent-cyan))"
+                        : "var(--accent-amber)",
+                    }} />
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="symbol-input-group">
             <input className="symbol-input" placeholder="AAPL" value={symbol}
               onChange={(e) => setSymbol(e.target.value.toUpperCase())}

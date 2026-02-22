@@ -194,7 +194,16 @@ app.get("/api/recommendations", async (req, res) => {
     const portfolio = await refreshPortfolio();
     const symbol = (req.query.symbol as string)?.toUpperCase() ?? "AAPL";
 
-    const analysis = await runAnalysis(symbol, portfolio);
+    // Parse goal parameters
+    const goalParams = {
+      monthlyTarget: parseFloat(req.query.monthlyTarget as string) || 0,
+      maxRiskPct: parseFloat(req.query.maxRiskPct as string) || 2,
+      minDTE: parseInt(req.query.minDTE as string, 10) || 14,
+      maxDTE: parseInt(req.query.maxDTE as string, 10) || 60,
+      allowedStrategies: (req.query.strategies as string)?.split(",").filter(Boolean) || [],
+    };
+
+    const analysis = await runAnalysis(symbol, portfolio, goalParams);
     cachedRecommendations = analysis.strategies;
 
     res.json({
@@ -505,6 +514,14 @@ app.get("/", (_req, res) => {
 //  ANALYSIS ENGINE
 // ══════════════════════════════════════════════════════════════
 
+interface GoalParams {
+  monthlyTarget: number;
+  maxRiskPct: number;
+  minDTE: number;
+  maxDTE: number;
+  allowedStrategies: string[];
+}
+
 interface AnalysisResult {
   underlyingPrice: number;
   dataSource: string;
@@ -515,7 +532,11 @@ interface AnalysisResult {
   lambdaCurve: any[];
 }
 
-async function runAnalysis(symbol: string, portfolio: Portfolio): Promise<AnalysisResult> {
+async function runAnalysis(
+  symbol: string,
+  portfolio: Portfolio,
+  goalParams?: GoalParams
+): Promise<AnalysisResult> {
   // Initialize quant if needed
   if (quant.status === "idle") await quant.initialize();
 
@@ -585,7 +606,67 @@ async function runAnalysis(symbol: string, portfolio: Portfolio): Promise<Analys
     timestamp: new Date(),
   });
 
-  const strategies = (result?.payload as RankedStrategy[]) ?? [];
+  let strategies = (result?.payload as RankedStrategy[]) ?? [];
+
+  // ── Apply goal-based filtering ──────────────────────────────
+  if (goalParams) {
+    const netLiq = portfolio.account.netLiquidation || 50_000;
+    const now = Date.now();
+
+    strategies = strategies.filter((s) => {
+      // Filter by allowed strategy types
+      if (goalParams.allowedStrategies.length > 0 &&
+          !goalParams.allowedStrategies.includes(s.strategy.type)) {
+        return false;
+      }
+
+      // Filter by max risk per trade
+      if (goalParams.maxRiskPct > 0) {
+        const riskPct = (s.strategy.maxLoss / netLiq) * 100;
+        if (riskPct > goalParams.maxRiskPct) return false;
+      }
+
+      // Filter by DTE range
+      if (goalParams.minDTE > 0 || goalParams.maxDTE > 0) {
+        const legDTEs = s.strategy.legs
+          .map((l) => {
+            if (!l.contract.expiration) return 0;
+            const expMs = new Date(l.contract.expiration).getTime();
+            return Math.round((expMs - now) / (1000 * 60 * 60 * 24));
+          })
+          .filter((d) => d > 0);
+        const avgDTE = legDTEs.length > 0
+          ? legDTEs.reduce((a, b) => a + b, 0) / legDTEs.length
+          : 30;
+        if (goalParams.minDTE > 0 && avgDTE < goalParams.minDTE) return false;
+        if (goalParams.maxDTE > 0 && avgDTE > goalParams.maxDTE) return false;
+      }
+
+      return true;
+    });
+
+    // Re-rank: boost strategies closer to optimal profit per trade for the monthly target
+    if (goalParams.monthlyTarget > 0) {
+      const targetPerTrade = goalParams.monthlyTarget / 4; // assume ~4 trades/month
+      strategies = strategies.map((s) => {
+        const profit = s.strategy.maxProfit === "unlimited"
+          ? s.strategy.maxLoss * 1.5
+          : s.strategy.maxProfit;
+        // Goal alignment: how close is expected profit to target per trade
+        const ratio = profit / Math.max(targetPerTrade, 1);
+        const goalBonus = ratio >= 0.5 && ratio <= 3
+          ? 15 * (1 - Math.abs(1 - ratio) / 2) // max 15pt bonus at ratio=1
+          : 0;
+        return { ...s, score: s.score + goalBonus };
+      }).sort((a, b) => b.score - a.score);
+    }
+
+    log.info(
+      `Goal filtering: ${strategies.length} strategies after filter ` +
+      `(target: $${goalParams.monthlyTarget}/mo, risk: ${goalParams.maxRiskPct}%, ` +
+      `DTE: ${goalParams.minDTE}-${goalParams.maxDTE}, types: ${goalParams.allowedStrategies.join(",")})`
+    );
+  }
 
   // Generate explanation cards for top strategies using real IV rank
   for (const s of strategies.slice(0, 5)) {
