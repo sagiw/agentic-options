@@ -672,6 +672,66 @@
       background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.25);
       color: var(--accent-amber);
     }
+    /* Verdict banner */
+    .pos-verdict {
+      border-radius: 10px; padding: 16px; margin-bottom: 14px;
+      display: flex; align-items: center; gap: 14px;
+    }
+    .pos-verdict-icon { font-size: 32px; }
+    .pos-verdict-text { flex: 1; }
+    .pos-verdict-title { font-size: 16px; font-weight: 800; margin-bottom: 4px; }
+    .pos-verdict-sub { font-size: 12px; opacity: 0.85; line-height: 1.4; }
+    .pos-verdict-profit {
+      background: linear-gradient(135deg, rgba(16,185,129,0.12), rgba(16,185,129,0.06));
+      border: 1px solid rgba(16,185,129,0.3); color: var(--accent-green);
+    }
+    .pos-verdict-loss {
+      background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(239,68,68,0.06));
+      border: 1px solid rgba(239,68,68,0.3); color: var(--accent-red);
+    }
+    .pos-verdict-breakeven {
+      background: linear-gradient(135deg, rgba(245,158,11,0.12), rgba(245,158,11,0.06));
+      border: 1px solid rgba(245,158,11,0.3); color: var(--accent-amber);
+    }
+    /* Recovery strategies */
+    .pos-recovery {
+      background: rgba(59,130,246,0.05); border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 10px; padding: 16px; margin-bottom: 14px;
+    }
+    .pos-recovery-title {
+      font-size: 13px; font-weight: 700; color: var(--accent-blue);
+      margin-bottom: 12px; display: flex; align-items: center; gap: 8px;
+    }
+    .pos-recovery-option {
+      background: rgba(0,0,0,0.15); border-radius: 8px; padding: 12px;
+      margin-bottom: 8px; border-left: 3px solid var(--accent-blue);
+    }
+    .pos-recovery-option:last-child { margin-bottom: 0; }
+    .pos-recovery-option-header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 6px;
+    }
+    .pos-recovery-option-name {
+      font-size: 13px; font-weight: 700; color: var(--text-primary);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .pos-recovery-option-tag {
+      font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+    }
+    .pos-recovery-option-desc {
+      font-size: 12px; color: var(--text-secondary); line-height: 1.5;
+    }
+    .pos-recovery-option-steps {
+      margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(30,41,59,0.3);
+    }
+    .pos-recovery-step {
+      font-size: 11px; color: var(--text-secondary); padding: 2px 0;
+      display: flex; gap: 6px;
+    }
+    .pos-recovery-step b { color: var(--text-primary); }
+    .pos-recovery-step-bullet {
+      color: var(--accent-cyan); font-weight: 800; flex-shrink: 0;
+    }
     /* Responsive */
     @media (max-width: 1024px) {
       .metrics-grid { grid-template-columns: repeat(3, 1fr); }
@@ -878,41 +938,70 @@ function PositionsTable({ positions }) {
                 <tr>
                   <td colSpan={9} style={{ padding: 0 }}>
                     <div className="pos-close-panel">
-                      {/* Header with P&L badge */}
-                      <div className="pos-close-header">
-                        <div className="pos-close-title">
-                          <span style={{ fontSize: 16 }}>{pnl >= 0 ? "📈" : "📉"}</span>
-                          Close Position: {closeVerb} {Math.abs(p.quantity)}x {sym} {type.toUpperCase()} ${p.contract.strike}
-                        </div>
-                        <div className="pos-close-pnl-badge" style={{
-                          background: pnl >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
-                          color: pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)",
-                        }}>
-                          {pnl >= 0 ? "+" : ""}{fmt.usd(pnl)} ({pnlPct >= 0 ? "+" : ""}{pnlPct.toFixed(1)}%)
-                        </div>
-                      </div>
 
-                      {/* Recommendation */}
-                      {recText && (
-                        <div className={`pos-close-recommendation pos-rec-${recType}`}>
-                          <span style={{ fontSize: 16 }}>{recIcon}</span>
-                          {recText}
+                      {/* ══ BIG VERDICT BANNER ══ */}
+                      {pnl > 0 ? (
+                        <div className="pos-verdict pos-verdict-profit">
+                          <div className="pos-verdict-icon">✅</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">
+                              Close Now = PROFIT of {fmt.usd(pnl)} (+{Math.abs(pnlPct).toFixed(1)}%)
+                            </div>
+                            <div className="pos-verdict-sub">
+                              {isSold
+                                ? <>You sold this option at <b>{fmt.usd(perShareCost)}/sh</b> and it's now worth <b>{fmt.usd(currentPerShare)}/sh</b>. It lost value → you keep the difference as profit.</>
+                                : <>You bought at <b>{fmt.usd(perShareCost)}/sh</b> and it's now worth <b>{fmt.usd(currentPerShare)}/sh</b>. It gained value → you can sell for more than you paid.</>
+                              }
+                            </div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(16,185,129,0.2)", color: "var(--accent-green)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            +{fmt.usd(pnl)}
+                          </div>
+                        </div>
+                      ) : pnl < 0 ? (
+                        <div className="pos-verdict pos-verdict-loss">
+                          <div className="pos-verdict-icon">❌</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">
+                              Close Now = LOSS of {fmt.usd(Math.abs(pnl))} ({pnlPct.toFixed(1)}%)
+                            </div>
+                            <div className="pos-verdict-sub">
+                              {isSold
+                                ? <>You sold at <b>{fmt.usd(perShareCost)}/sh</b> but it's now <b>{fmt.usd(currentPerShare)}/sh</b> — it went up against you. Buying to close costs more than you received.</>
+                                : <>You bought at <b>{fmt.usd(perShareCost)}/sh</b> but it's now <b>{fmt.usd(currentPerShare)}/sh</b> — it lost value from time decay and/or wrong direction.</>
+                              }
+                            </div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(239,68,68,0.2)", color: "var(--accent-red)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            {fmt.usd(pnl)}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="pos-verdict pos-verdict-breakeven">
+                          <div className="pos-verdict-icon">⚖️</div>
+                          <div className="pos-verdict-text">
+                            <div className="pos-verdict-title">Close Now = BREAKEVEN</div>
+                            <div className="pos-verdict-sub">Current value equals your entry price. No profit, no loss.</div>
+                          </div>
+                          <div className="pos-close-pnl-badge" style={{ background: "rgba(245,158,11,0.2)", color: "var(--accent-amber)", fontSize: 20, fontWeight: 800, padding: "8px 16px" }}>
+                            $0
+                          </div>
                         </div>
                       )}
 
-                      {/* Stats grid */}
+                      {/* ── Stats grid ── */}
                       <div className="pos-close-grid">
                         <div className="pos-close-stat">
                           <div className="pos-close-stat-value" style={{ color: "var(--accent-cyan)" }}>
                             {fmt.usd(perShareCost)}/sh
                           </div>
-                          <div className="pos-close-stat-label">{isSold ? "Sold At" : "Bought At"}</div>
+                          <div className="pos-close-stat-label">{isSold ? "Sold At (Entry)" : "Bought At (Entry)"}</div>
                         </div>
                         <div className="pos-close-stat">
                           <div className="pos-close-stat-value" style={{ color: "var(--accent-blue)" }}>
                             {fmt.usd(currentPerShare)}/sh
                           </div>
-                          <div className="pos-close-stat-label">Current Price</div>
+                          <div className="pos-close-stat-label">Current Market Price</div>
                         </div>
                         <div className="pos-close-stat">
                           <div className="pos-close-stat-value" style={{
@@ -921,7 +1010,7 @@ function PositionsTable({ positions }) {
                             {fmt.sign(pnl)}
                           </div>
                           <div className="pos-close-stat-label">
-                            {pnl >= 0 ? "Profit if Closed" : "Loss if Closed"}
+                            {pnl >= 0 ? "Profit if Closed Now" : "Loss if Closed Now"}
                           </div>
                         </div>
                         <div className="pos-close-stat">
@@ -936,11 +1025,196 @@ function PositionsTable({ positions }) {
                         </div>
                       </div>
 
-                      {/* How to close */}
+                      {/* ══ RECOVERY STRATEGIES (only for losing positions) ══ */}
+                      {pnl < 0 && (() => {
+                        const underlying = p.contract.underlying || sym.replace(/\d.*/,"") || sym;
+                        const lossPctAbs = totalPremium > 0 ? (Math.abs(pnl) / totalPremium * 100) : 0;
+                        const breakEvenPrice = isSold
+                          ? (type === "put" ? p.contract.strike - perShareCost : p.contract.strike + perShareCost)
+                          : (type === "call" ? p.contract.strike + perShareCost : p.contract.strike - perShareCost);
+                        const recoveryOptions = [];
+
+                        if (isSold) {
+                          // Short option at a loss — it went against us
+                          recoveryOptions.push({
+                            name: "Roll Out (in time)",
+                            tag: "Common", tagColor: "var(--accent-green)", tagBg: "rgba(16,185,129,0.15)",
+                            desc: `Buy to close the current ${type} and sell a new ${type} at the SAME strike ($${p.contract.strike}) but with a LATER expiration. You collect additional premium that can offset or reduce the loss.`,
+                            steps: [
+                              `In TWS: Right-click on ${sym} → Roll`,
+                              `Set action: ${closeAction} current + SELL new`,
+                              `Keep strike at $${p.contract.strike}, pick expiration 2-4 weeks later`,
+                              `Net credit should be positive (you receive more than you pay)`,
+                              `This gives the underlying more time to move in your favor`,
+                            ],
+                            canProfit: true,
+                          });
+                          if (type === "put") {
+                            recoveryOptions.push({
+                              name: "Roll Down & Out",
+                              tag: "Defensive", tagColor: "var(--accent-cyan)", tagBg: "rgba(6,182,212,0.15)",
+                              desc: `Buy to close the current put and sell a new put at a LOWER strike with a later expiration. Reduces risk by moving the strike further from the current price, while collecting time premium.`,
+                              steps: [
+                                `Buy to Close: ${underlying} PUT $${p.contract.strike}`,
+                                `Sell to Open: ${underlying} PUT at a lower strike (e.g., $${(p.contract.strike - 5).toFixed(0)})`,
+                                `Choose expiration 2-4 weeks later to maximize time premium`,
+                                `Try for a net credit — this may not always be possible with a lower strike`,
+                              ],
+                              canProfit: true,
+                            });
+                          } else {
+                            recoveryOptions.push({
+                              name: "Roll Up & Out",
+                              tag: "Defensive", tagColor: "var(--accent-cyan)", tagBg: "rgba(6,182,212,0.15)",
+                              desc: `Buy to close the current call and sell a new call at a HIGHER strike with a later expiration. Moves the strike further above current price.`,
+                              steps: [
+                                `Buy to Close: ${underlying} CALL $${p.contract.strike}`,
+                                `Sell to Open: ${underlying} CALL at a higher strike (e.g., $${(p.contract.strike + 5).toFixed(0)})`,
+                                `Choose expiration 2-4 weeks later`,
+                                `Aim for a net credit`,
+                              ],
+                              canProfit: true,
+                            });
+                          }
+                          recoveryOptions.push({
+                            name: "Close & Accept Loss",
+                            tag: "Safest", tagColor: "var(--accent-amber)", tagBg: "rgba(245,158,11,0.15)",
+                            desc: `Sometimes the best move is to cut losses. Close the position now and free up capital for better opportunities. Loss: ${fmt.usd(Math.abs(pnl))}.`,
+                            steps: [
+                              `${closeVerb} ${Math.abs(p.quantity)} contracts at ~${fmt.usd(currentPerShare)}/sh`,
+                              `Total cost to close: ~${fmt.usd(Math.abs(p.marketValue))}`,
+                              `Realized loss: ${fmt.usd(Math.abs(pnl))}`,
+                              `Capital freed up for new trades`,
+                            ],
+                            canProfit: false,
+                          });
+                        } else {
+                          // Long option at a loss — value dropped
+                          if (daysToExp != null && daysToExp > 14) {
+                            recoveryOptions.push({
+                              name: "Hold & Wait",
+                              tag: "If thesis intact", tagColor: "var(--accent-blue)", tagBg: "rgba(59,130,246,0.15)",
+                              desc: `You still have ${daysToExp} days until expiration. If your original thesis (${type === "call" ? `${underlying} will go above $${breakEvenPrice.toFixed(0)}` : `${underlying} will go below $${breakEvenPrice.toFixed(0)}`}) is still valid, holding may make sense.`,
+                              steps: [
+                                `Current breakeven: ${underlying} needs to reach $${breakEvenPrice.toFixed(2)} by expiration`,
+                                `Time value remaining: ${daysToExp} days — theta will accelerate under 21 days`,
+                                `Monitor daily — set a mental stop loss (e.g., close if loss exceeds ${fmt.usd(totalPremium * 0.7)})`,
+                              ],
+                              canProfit: true,
+                            });
+                          }
+                          recoveryOptions.push({
+                            name: "Roll to Later Expiration",
+                            tag: "Common", tagColor: "var(--accent-green)", tagBg: "rgba(16,185,129,0.15)",
+                            desc: `Sell your current ${type} and buy a new one at the same strike but with more time. Costs additional premium but gives the trade more time to work.`,
+                            steps: [
+                              `Sell to Close: ${underlying} ${type.toUpperCase()} $${p.contract.strike} (current)`,
+                              `Buy to Open: ${underlying} ${type.toUpperCase()} $${p.contract.strike} (later expiration)`,
+                              `Net cost: the difference in premiums (debit)`,
+                              `This resets the clock but at additional cost`,
+                            ],
+                            canProfit: true,
+                          });
+                          recoveryOptions.push({
+                            name: "Sell a Spread (Reduce Cost)",
+                            tag: "Advanced", tagColor: "var(--accent-purple)", tagBg: "rgba(139,92,246,0.15)",
+                            desc: `Turn your losing ${type} into a ${type === "call" ? "bull call" : "bear put"} spread by selling a further-OTM ${type}. This collects premium to reduce your cost basis, but caps your max profit.`,
+                            steps: [
+                              `Keep: ${underlying} ${type.toUpperCase()} $${p.contract.strike} (your current position)`,
+                              `Sell to Open: ${underlying} ${type.toUpperCase()} $${type === "call" ? (p.contract.strike + 10).toFixed(0) : (p.contract.strike - 10).toFixed(0)} (same expiration)`,
+                              `Premium received reduces your total cost`,
+                              `Max profit is now capped at the spread width minus net cost`,
+                            ],
+                            canProfit: true,
+                          });
+                          recoveryOptions.push({
+                            name: "Close & Accept Loss",
+                            tag: lossPctAbs > 50 ? "Recommended" : "Safest",
+                            tagColor: lossPctAbs > 50 ? "var(--accent-red)" : "var(--accent-amber)",
+                            tagBg: lossPctAbs > 50 ? "rgba(239,68,68,0.15)" : "rgba(245,158,11,0.15)",
+                            desc: lossPctAbs > 50
+                              ? `Down ${lossPctAbs.toFixed(0)}% — most of the premium is gone. Close now to salvage the remaining ${fmt.usd(Math.abs(p.marketValue))} before theta eats the rest.`
+                              : `Close at current loss of ${fmt.usd(Math.abs(pnl))} and reallocate capital. Sometimes cutting a small loss prevents a bigger one.`,
+                            steps: [
+                              `${closeVerb} ${Math.abs(p.quantity)} contracts at ~${fmt.usd(currentPerShare)}/sh`,
+                              `You'll recover: ~${fmt.usd(Math.abs(p.marketValue))}`,
+                              `Realized loss: ${fmt.usd(Math.abs(pnl))}`,
+                            ],
+                            canProfit: false,
+                          });
+                        }
+
+                        return (
+                          <div className="pos-recovery">
+                            <div className="pos-recovery-title">
+                              <span style={{ fontSize: 16 }}>🔄</span>
+                              What Can You Do? — Recovery Options
+                            </div>
+                            {recoveryOptions.map((opt, oi) => (
+                              <div key={oi} className="pos-recovery-option" style={{
+                                borderLeftColor: opt.canProfit ? "var(--accent-green)" : "var(--accent-amber)",
+                              }}>
+                                <div className="pos-recovery-option-header">
+                                  <div className="pos-recovery-option-name">
+                                    <span>{opt.canProfit ? "🟢" : "🟡"}</span>
+                                    {opt.name}
+                                  </div>
+                                  <span className="pos-recovery-option-tag" style={{
+                                    background: opt.tagBg, color: opt.tagColor,
+                                  }}>
+                                    {opt.tag}
+                                  </span>
+                                </div>
+                                <div className="pos-recovery-option-desc">{opt.desc}</div>
+                                <div className="pos-recovery-option-steps">
+                                  {opt.steps.map((step, si) => (
+                                    <div key={si} className="pos-recovery-step">
+                                      <span className="pos-recovery-step-bullet">→</span>
+                                      <span dangerouslySetInnerHTML={{ __html: step.replace(/\*\*(.*?)\*\*/g, "<b>$1</b>") }} />
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+
+                      {/* ── Profit position advice ── */}
+                      {pnl > 0 && (
+                        <div className="pos-close-recommendation pos-rec-profit" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontSize: 16 }}>💰</span>
+                            <b>You're in profit — here are your options:</b>
+                          </div>
+                          <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)" }}>
+                            {isSold ? (
+                              <>
+                                <b style={{ color: "var(--accent-green)" }}>1. Close now</b> — Lock in {fmt.usd(pnl)} profit ({Math.abs(pnlPct).toFixed(0)}% of max). Many pros close at 50-75% of max profit.
+                                <br/><b style={{ color: "var(--accent-cyan)" }}>2. Let it ride</b> — Keep the position to capture the remaining premium. Risk: the underlying could reverse.
+                                {daysToExp != null && daysToExp <= 7 && (
+                                  <><br/><b style={{ color: "var(--accent-amber)" }}>⚠️ Only {daysToExp} days left</b> — gamma risk is high near expiration. Most pros close before the last week.</>
+                                )}
+                              </>
+                            ) : (
+                              <>
+                                <b style={{ color: "var(--accent-green)" }}>1. Sell to Close</b> — Take the {fmt.usd(pnl)} profit now. A bird in hand.
+                                <br/><b style={{ color: "var(--accent-cyan)" }}>2. Sell half</b> — Close {Math.ceil(Math.abs(p.quantity)/2)} of {Math.abs(p.quantity)} contracts. Lock in some profit, let the rest run.
+                                <br/><b style={{ color: "var(--accent-purple)" }}>3. Roll up/out</b> — Sell this and buy a further OTM option to stay in the trade with reduced risk.
+                                {daysToExp != null && daysToExp <= 21 && (
+                                  <><br/><b style={{ color: "var(--accent-amber)" }}>⚠️ {daysToExp} days left</b> — theta decay accelerating. Consider taking profits.</>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* ── How to close ── */}
                       <div className="pos-close-how">
                         <div className="pos-close-how-title">
                           <span style={{ fontSize: 14 }}>🔧</span>
-                          How to Close This Position
+                          How to {closeVerb} in IBKR TWS
                         </div>
                         <div className="pos-close-step">
                           <div className="pos-close-step-num">1</div>
@@ -1029,20 +1303,6 @@ function PositionsTable({ positions }) {
                           />
                         </div>
                       )}
-
-                      {/* Note */}
-                      <div className="pos-close-note" style={{ marginTop: 12 }}>
-                        <b>💡 Tips:</b>{" "}
-                        {isSold ? (
-                          <>For <b>short options</b>: Buy to Close means you pay the current premium to exit.
-                          {pnl > 0 ? " You profit because the option is now cheaper than when you sold it." : " You lose because the option is now more expensive than when you sold it."}
-                          {" "}Many traders close short options at 50-75% of max profit to reduce risk.</>
-                        ) : (
-                          <>For <b>long options</b>: Sell to Close means you sell the option at current market price.
-                          {pnl > 0 ? " You profit because the option is now worth more than you paid." : " You lose because the option lost value (time decay / wrong direction)."}
-                          {daysToExp != null && daysToExp <= 21 ? " With less than 21 days left, time decay (theta) accelerates rapidly." : ""}</>
-                        )}
-                      </div>
                     </div>
                   </td>
                 </tr>
