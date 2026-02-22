@@ -2623,9 +2623,20 @@ function ManualLegPanel({ legs, strategyName }) {
       {legs.map((leg, li) => {
         const isOption = leg.type === "call" || leg.type === "put";
         const underlying = leg.underlying || leg.symbol || (strategyName || "").split(" ").find(w => /^[A-Z]{1,5}$/.test(w)) || "???";
-        const expDate = leg.expiration ? new Date(leg.expiration) : null;
+        // Parse expiration — handle YYYYMMDD string, ISO string, or Date object
+        let expDate = null;
+        if (leg.expiration) {
+          const expRaw = String(leg.expiration);
+          if (/^\d{8}$/.test(expRaw)) {
+            // YYYYMMDD → parse as local date (no UTC shift)
+            expDate = new Date(parseInt(expRaw.slice(0,4)), parseInt(expRaw.slice(4,6))-1, parseInt(expRaw.slice(6,8)));
+          } else {
+            expDate = new Date(leg.expiration);
+          }
+          if (isNaN(expDate.getTime())) expDate = null;
+        }
         const expStr = expDate
-          ? expDate.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" })
+          ? expDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "2-digit" })
           : "—";
         const expIBKR = expDate
           ? `${expDate.getFullYear()}${String(expDate.getMonth()+1).padStart(2,"0")}${String(expDate.getDate()).padStart(2,"0")}`
