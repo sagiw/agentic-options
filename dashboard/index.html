@@ -816,6 +816,81 @@ function FactorBars({ factors }) {
   );
 }
 
+// ── Reusable manual entry panel for any strategy with legs ──
+function ManualLegPanel({ legs, strategyName }) {
+  return (
+    <div className="manual-panel" onClick={(e) => e.stopPropagation()}>
+      <div className="manual-panel-title">
+        <span style={{ fontSize: 16 }}>📋</span>
+        Manual Order Entry — Enter these in IBKR TWS
+      </div>
+      {legs.map((leg, li) => {
+        const isOption = leg.type === "call" || leg.type === "put";
+        const underlying = leg.underlying || leg.symbol || (strategyName || "").split(" ").find(w => /^[A-Z]{1,5}$/.test(w)) || "???";
+        const expDate = leg.expiration ? new Date(leg.expiration) : null;
+        const expStr = expDate
+          ? expDate.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" })
+          : "—";
+        const expIBKR = expDate
+          ? `${expDate.getFullYear()}${String(expDate.getMonth()+1).padStart(2,"0")}${String(expDate.getDate()).padStart(2,"0")}`
+          : "—";
+
+        const fields = [
+          { label: "Action", value: leg.side.toUpperCase(), highlight: leg.side === "buy" ? "var(--accent-green)" : "var(--accent-red)" },
+          { label: "Quantity", value: String(leg.quantity) },
+          { label: "Symbol", value: underlying },
+          { label: "Sec Type", value: isOption ? "OPT" : "STK" },
+        ];
+        if (isOption) {
+          fields.push(
+            { label: "Right", value: leg.type === "call" ? "CALL (C)" : "PUT (P)" },
+            { label: "Strike", value: `$${leg.strike}` },
+            { label: "Expiration", value: `${expStr}  (IBKR: ${expIBKR})` },
+            { label: "Multiplier", value: "100" },
+          );
+        }
+        fields.push(
+          { label: "Exchange", value: "SMART" },
+          { label: "Order Type", value: "LMT" },
+          { label: "Limit Price", value: leg.price != null ? `$${Number(leg.price).toFixed(2)}` : "MKT" },
+          { label: "TIF", value: "DAY" },
+        );
+
+        const copyText = fields.map(f => `${f.label}: ${f.value}`).join("\n");
+
+        return (
+          <div key={li} className={`manual-leg manual-leg-${leg.side}`}>
+            <div className="manual-leg-title">
+              <span style={{ color: leg.side === "buy" ? "var(--accent-green)" : "var(--accent-red)" }}>
+                {leg.side === "buy" ? "▲" : "▼"}
+              </span>
+              Leg {li + 1}: {leg.side.toUpperCase()} {leg.quantity}x {isOption ? `${underlying} ${leg.type.toUpperCase()} $${leg.strike}` : underlying}
+              <button className="manual-copy-btn" onClick={() => { navigator.clipboard.writeText(copyText); }}>
+                Copy
+              </button>
+            </div>
+            {fields.map((f, fi) => (
+              <div key={fi} className="manual-field">
+                <span className="manual-field-label">{f.label}</span>
+                <span className="manual-field-value" style={f.highlight ? { color: f.highlight } : {}}>
+                  {f.value}
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
+        <b>Steps in IBKR TWS:</b> Open TWS → right-click symbol → Trade → New Order →
+        enter each leg as shown above → verify all fields → Transmit.
+        <br/>
+        <b>Note:</b> Expirations and strikes shown are from the AI analysis.
+        Verify they exist in TWS Option Chain before placing.
+      </div>
+    </div>
+  );
+}
+
 function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
   const [showManual, setShowManual] = useState(false);
   const s = strategy;
@@ -955,75 +1030,7 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
             </div>
           )}
           {showManual && (
-            <div className="manual-panel" onClick={(e) => e.stopPropagation()}>
-              <div className="manual-panel-title">
-                <span style={{ fontSize: 16 }}>📋</span>
-                Manual Order Entry — Enter these in IBKR TWS
-              </div>
-              {s.legs.map((leg, li) => {
-                const isOption = leg.type === "call" || leg.type === "put";
-                const underlying = leg.underlying || leg.symbol || s.name.split(" ").find(w => /^[A-Z]{1,5}$/.test(w)) || "???";
-                const expDate = leg.expiration ? new Date(leg.expiration) : null;
-                const expStr = expDate
-                  ? expDate.toLocaleDateString("en-US", { year: "numeric", month: "2-digit", day: "2-digit" })
-                  : "—";
-                const expIBKR = expDate
-                  ? `${expDate.getFullYear()}${String(expDate.getMonth()+1).padStart(2,"0")}${String(expDate.getDate()).padStart(2,"0")}`
-                  : "—";
-
-                const fields = [
-                  { label: "Action", value: leg.side.toUpperCase(), highlight: leg.side === "buy" ? "var(--accent-green)" : "var(--accent-red)" },
-                  { label: "Quantity", value: String(leg.quantity) },
-                  { label: "Symbol", value: underlying },
-                  { label: "Sec Type", value: isOption ? "OPT" : "STK" },
-                ];
-                if (isOption) {
-                  fields.push(
-                    { label: "Right", value: leg.type === "call" ? "CALL (C)" : "PUT (P)" },
-                    { label: "Strike", value: `$${leg.strike}` },
-                    { label: "Expiration", value: `${expStr}  (IBKR: ${expIBKR})` },
-                    { label: "Multiplier", value: "100" },
-                  );
-                }
-                fields.push(
-                  { label: "Exchange", value: "SMART" },
-                  { label: "Order Type", value: "LMT" },
-                  { label: "Limit Price", value: leg.price != null ? `$${leg.price.toFixed(2)}` : "MKT" },
-                  { label: "TIF", value: "DAY" },
-                );
-
-                const copyText = fields.map(f => `${f.label}: ${f.value}`).join("\n");
-
-                return (
-                  <div key={li} className={`manual-leg manual-leg-${leg.side}`}>
-                    <div className="manual-leg-title">
-                      <span style={{ color: leg.side === "buy" ? "var(--accent-green)" : "var(--accent-red)" }}>
-                        {leg.side === "buy" ? "▲" : "▼"}
-                      </span>
-                      Leg {li + 1}: {leg.side.toUpperCase()} {leg.quantity}x {isOption ? `${underlying} ${leg.type.toUpperCase()} $${leg.strike}` : underlying}
-                      <button className="manual-copy-btn" onClick={() => { navigator.clipboard.writeText(copyText); }}>
-                        Copy
-                      </button>
-                    </div>
-                    {fields.map((f, fi) => (
-                      <div key={fi} className="manual-field">
-                        <span className="manual-field-label">{f.label}</span>
-                        <span className="manual-field-value" style={f.highlight ? { color: f.highlight } : {}}>
-                          {f.value}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-              <div style={{ marginTop: 10, fontSize: 11, color: "var(--text-muted)", lineHeight: 1.5 }}>
-                <b>Steps in IBKR TWS:</b> Open TWS → right-click symbol → Trade → New Order →
-                enter each leg as shown above → verify all fields → Transmit.
-                <br/>
-                <b>Note:</b> Expirations and strikes shown are from the AI analysis.
-                Verify they exist in TWS Option Chain before placing.
-              </div>
-            </div>
+            <ManualLegPanel legs={s.legs} strategyName={s.name} />
           )}
         </div>
       )}
@@ -1472,6 +1479,8 @@ function App() {
   const [newWatchlistSymbol, setNewWatchlistSymbol] = useState("");
   const [portfolioPlan, setPortfolioPlan] = useState(null);
   const [scanningAll, setScanningAll] = useState(false);
+  const [expandedPlanIdx, setExpandedPlanIdx] = useState(null);
+  const [planManualIdx, setPlanManualIdx] = useState(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -2031,27 +2040,138 @@ function App() {
                           const allocationPct = portfolioPlan.totalCapitalRequired > 0
                             ? (s.capitalRequired / portfolioPlan.totalCapitalRequired * 100)
                             : 0;
+                          const isExpanded = expandedPlanIdx === s.idx;
+                          const showManual = planManualIdx === s.idx;
                           return (
-                            <div key={s.idx} className="plan-strat-row">
-                              <div className="plan-strat-num">{s.idx + 1}</div>
-                              <div>
-                                <div className="plan-strat-name">{s.name}</div>
-                                <div className="plan-strat-symbol">{s.type}</div>
+                            <div key={s.idx}>
+                              <div className="plan-strat-row"
+                                style={{ cursor: "pointer", borderColor: isExpanded ? "rgba(139,92,246,0.5)" : undefined, background: isExpanded ? "rgba(139,92,246,0.04)" : undefined }}
+                                onClick={() => setExpandedPlanIdx(isExpanded ? null : s.idx)}>
+                                <div className="plan-strat-num">{s.idx + 1}</div>
+                                <div>
+                                  <div className="plan-strat-name">
+                                    {s.name}
+                                    <span style={{ marginLeft: 6, fontSize: 10, color: "var(--text-muted)" }}>
+                                      {isExpanded ? "▲" : "▼"}
+                                    </span>
+                                  </div>
+                                  <div className="plan-strat-symbol">{s.type}</div>
+                                </div>
+                                <div className="plan-strat-profit">+{fmt.usd(s.expectedProfit)}</div>
+                                <div className="plan-strat-risk" style={{
+                                  color: s.riskPct > 2 ? "var(--accent-red)" : "var(--accent-green)"
+                                }}>
+                                  Risk: {s.riskPct.toFixed(1)}%
+                                </div>
+                                <div className="plan-strat-capital">{fmt.usd(s.capitalRequired)}</div>
+                                <div className="plan-strat-dte">{s.avgDTE}d DTE</div>
+                                <div className="plan-strat-pct" style={{
+                                  background: "rgba(139,92,246,0.1)",
+                                  color: "var(--accent-purple)",
+                                }}>
+                                  {allocationPct.toFixed(0)}%
+                                </div>
                               </div>
-                              <div className="plan-strat-profit">+{fmt.usd(s.expectedProfit)}</div>
-                              <div className="plan-strat-risk" style={{
-                                color: s.riskPct > 2 ? "var(--accent-red)" : "var(--accent-green)"
-                              }}>
-                                Risk: {s.riskPct.toFixed(1)}%
-                              </div>
-                              <div className="plan-strat-capital">{fmt.usd(s.capitalRequired)}</div>
-                              <div className="plan-strat-dte">{s.avgDTE}d DTE</div>
-                              <div className="plan-strat-pct" style={{
-                                background: "rgba(139,92,246,0.1)",
-                                color: "var(--accent-purple)",
-                              }}>
-                                {allocationPct.toFixed(0)}%
-                              </div>
+
+                              {/* ── Expanded detail panel ──── */}
+                              {isExpanded && (
+                                <div style={{
+                                  background: "rgba(139,92,246,0.03)",
+                                  border: "1px solid rgba(139,92,246,0.2)",
+                                  borderTop: "none",
+                                  borderRadius: "0 0 10px 10px",
+                                  padding: 16,
+                                  marginTop: -1,
+                                }}>
+                                  {/* Strategy details grid */}
+                                  <div className="strategy-details" style={{ marginBottom: 12 }}>
+                                    <div>
+                                      <div className="strategy-detail-label">Max Profit</div>
+                                      <div className="strategy-detail-value positive">
+                                        {s.maxProfit === "unlimited" ? "Unlimited" : fmt.usd(s.maxProfit)}
+                                      </div>
+                                    </div>
+                                    <div>
+                                      <div className="strategy-detail-label">Max Loss</div>
+                                      <div className="strategy-detail-value negative">{fmt.usd(s.maxLoss)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="strategy-detail-label">Capital Required</div>
+                                      <div className="strategy-detail-value">{fmt.usd(s.capitalRequired)}</div>
+                                    </div>
+                                    <div>
+                                      <div className="strategy-detail-label">Score</div>
+                                      <div className="strategy-detail-value" style={{ color: "var(--accent-blue)" }}>{s.score.toFixed(0)}</div>
+                                    </div>
+                                  </div>
+
+                                  {/* Legs badges */}
+                                  <div className="legs" style={{ marginBottom: 12 }}>
+                                    {(s.legs || []).map((leg, li) => (
+                                      <div key={li} className={`leg-badge ${leg.side === "buy" ? "leg-buy" : "leg-sell"}`}>
+                                        {leg.side.toUpperCase()} {leg.quantity}x {leg.type.toUpperCase()} ${leg.strike}
+                                        {leg.expiration && (() => {
+                                          const d = new Date(leg.expiration);
+                                          return !isNaN(d.getTime()) ? (
+                                            <span style={{ marginLeft: 4, opacity: 0.7, fontSize: 10 }}>
+                                              {d.toLocaleDateString("en-US", { month: "short", day: "numeric" })}
+                                            </span>
+                                          ) : null;
+                                        })()}
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {/* Factor bars */}
+                                  {s.factors?.length > 0 && (
+                                    <div style={{ marginBottom: 12 }}>
+                                      <div className="card-title">SHAP Factor Attribution</div>
+                                      <FactorBars factors={s.factors} />
+                                    </div>
+                                  )}
+
+                                  {/* Action buttons */}
+                                  <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                                    <button
+                                      className="btn-approve"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        // Find this strategy in cached recommendations by loading it first
+                                        // For now, set symbol and trigger single analysis
+                                        setSymbol(s.symbol);
+                                        addToast("info", "Analyze First",
+                                          `Run single-symbol analysis on ${s.symbol} to approve via IBKR. Use Manual Entry for direct TWS placement.`);
+                                      }}
+                                    >
+                                      ⚡ Analyze {s.symbol} to Approve
+                                    </button>
+                                    <button
+                                      className="btn-manual"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setPlanManualIdx(showManual ? null : s.idx);
+                                      }}
+                                    >
+                                      {showManual ? "Hide Manual Details" : "📋 Manual Entry"}
+                                    </button>
+                                  </div>
+
+                                  {!showManual && (
+                                    <div className="risk-warning" style={{ marginTop: 10 }}>
+                                      <b>📋 Manual Entry</b> — shows all contract details to enter in IBKR TWS manually.
+                                      <br/>
+                                      <b>⚡ Analyze</b> — runs full analysis on {s.symbol} to enable automatic IBKR submission.
+                                    </div>
+                                  )}
+
+                                  {/* Manual entry panel */}
+                                  {showManual && (
+                                    <div style={{ marginTop: 12 }}>
+                                      <ManualLegPanel legs={s.legs} strategyName={s.name} />
+                                    </div>
+                                  )}
+                                </div>
+                              )}
                             </div>
                           );
                         })}
