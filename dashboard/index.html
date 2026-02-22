@@ -920,14 +920,24 @@ function fmtSignUsd(v) {
 
 // ── Find next standard monthly expiration (3rd Friday of month) ──
 // Options standard monthly expirations are the 3rd Friday of each month.
-// Returns the next monthly expiration that is at least minDaysOut from today.
-function nextMonthlyExpiration(minDaysOut) {
+// Returns the next monthly expiration that is:
+//   1) at least minDaysOut from today, AND
+//   2) strictly AFTER afterDate (the current position's expiration), if provided.
+// This prevents a "roll" to the same expiration date.
+function nextMonthlyExpiration(minDaysOut, afterDate) {
   const now = new Date();
   const target = new Date(now);
   target.setDate(target.getDate() + (minDaysOut || 21));
 
-  // Start searching from the target month
-  for (let m = 0; m < 6; m++) {
+  // Normalize afterDate for comparison (midnight local)
+  let afterTime = 0;
+  if (afterDate instanceof Date && !isNaN(afterDate.getTime())) {
+    const ad = new Date(afterDate.getFullYear(), afterDate.getMonth(), afterDate.getDate());
+    afterTime = ad.getTime();
+  }
+
+  // Start searching from the target month, up to 12 months out
+  for (let m = 0; m < 12; m++) {
     const year = target.getFullYear();
     const month = target.getMonth() + m;
     const adjYear = year + Math.floor(month / 12);
@@ -940,14 +950,17 @@ function nextMonthlyExpiration(minDaysOut) {
 
     // Must be at least minDaysOut from now
     const daysFromNow = Math.ceil((thirdFriday.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    if (daysFromNow >= (minDaysOut || 21)) {
-      return thirdFriday;
-    }
+    if (daysFromNow < (minDaysOut || 21)) continue;
+
+    // Must be strictly AFTER the current position's expiration
+    if (afterTime > 0 && thirdFriday.getTime() <= afterTime) continue;
+
+    return thirdFriday;
   }
-  // Fallback: just add days
-  const fallback = new Date(now);
-  fallback.setDate(fallback.getDate() + (minDaysOut || 30));
-  return fallback;
+  // Fallback: just add days beyond afterDate
+  const base = afterTime > 0 ? new Date(afterTime) : new Date(now);
+  base.setDate(base.getDate() + (minDaysOut || 30));
+  return base;
 }
 
 // ── Fetch real IBKR NBBO for a roll target option ──
@@ -1041,7 +1054,8 @@ function PositionsTable({ positions }) {
     const underlying = p.contract.underlying || (p.contract.symbol || "").replace(/\d.*/, "") || p.contract.symbol;
     const right = type === "call" ? "C" : "P";
     const rollStrikeDiff = 5;
-    const newExpDate = nextMonthlyExpiration(21);
+    const currentExp = parseExpDate(p.contract.expiration);
+    const newExpDate = nextMonthlyExpiration(21, currentExp);
     // Build YYYYMMDD using local timezone (not UTC!) to avoid date shift
     const newExpYYYYMMDD = `${newExpDate.getFullYear()}${String(newExpDate.getMonth()+1).padStart(2,"0")}${String(newExpDate.getDate()).padStart(2,"0")}`;
 
@@ -1827,8 +1841,9 @@ function PositionsTable({ positions }) {
 
                         // ── Roll calculation helpers ──
                         const rollStrikeDiff = 5; // $5 strike shift for Down/Up rolls
-                        // Use the next standard monthly expiration (3rd Friday) at least 21 days out
-                        const newExpDate = nextMonthlyExpiration(21);
+                        // Use the next standard monthly expiration (3rd Friday) at least 21 days out,
+                        // and strictly AFTER the current position's expiration
+                        const newExpDate = nextMonthlyExpiration(21, expDate);
                         const newDTECalc = Math.ceil((newExpDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
                         const mult = p.contract.multiplier || 100;
                         const posDelta = p.greeks?.delta; // use actual Greek if available
