@@ -99,6 +99,11 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   private liveAccountData: Partial<AccountSummary> = {};
   private liveAccountReady = false;
 
+  // ── Live position data with P&L (from updatePortfolioValue) ─
+  // reqPositions only gives contract+qty+avgCost — no market value or P&L.
+  // updatePortfolioValue (from reqAccountUpdates) gives the full picture.
+  private livePositions: Map<string, Position> = new Map();
+
   // Pending request resolvers
   private pendingRequests: Map<number, {
     resolve: (value: any) => void;
@@ -245,11 +250,27 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         this.handleLiveAccountUpdate(account, tag, value, currency);
       });
 
+      // ── Live Portfolio Value Updates ────────────────────
+      // reqAccountUpdates also pushes per-position market value and P&L
+      // via updatePortfolioValue. This is the ONLY way to get real-time
+      // P&L per position — reqPositions does NOT provide market value or P&L.
+      this.ib.on(EventName.updatePortfolio, (
+        contract: any, pos: number, marketPrice: number, marketValue: number,
+        averageCost: number, unrealizedPnL: number, realizedPnL: number,
+        accountName: string
+      ) => {
+        this.handleLivePortfolioValue(
+          contract, pos, marketPrice, marketValue,
+          averageCost, unrealizedPnL, realizedPnL
+        );
+      });
+
       this.ib.on(EventName.accountDownloadEnd, (account: string) => {
         this.liveAccountReady = true;
         log.info(
           `Live account subscription ready for ${account}: ` +
-          `Net Liq $${(this.liveAccountData.netLiquidation ?? 0).toLocaleString()}`
+          `Net Liq $${(this.liveAccountData.netLiquidation ?? 0).toLocaleString()}, ` +
+          `${this.livePositions.size} positions with P&L`
         );
         this.emit("accountUpdate", this.normalizeAccount(this.liveAccountData));
       });
@@ -385,6 +406,53 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       case "UnrealizedPnL":     this.liveAccountData.unrealizedPnL = numValue; break;
       case "RealizedPnL":       this.liveAccountData.realizedPnL = numValue; break;
     }
+  }
+
+  /**
+   * Handle per-position market data from the live account subscription.
+   * This is the ONLY reliable way to get market value and P&L per position.
+   * reqPositions does NOT provide these — only contract, qty, and avgCost.
+   */
+  private handleLivePortfolioValue(
+    contract: any, pos: number, marketPrice: number, marketValue: number,
+    averageCost: number, unrealizedPnL: number, realizedPnL: number
+  ): void {
+    const isOption = contract.secType === "OPT";
+    const key = `${contract.symbol}-${contract.secType}-${contract.strike ?? 0}-${contract.right ?? ""}-${contract.lastTradeDateOrContractMonth ?? ""}`;
+
+    const position: Position = {
+      contract: isOption
+        ? {
+            symbol: contract.localSymbol ?? contract.symbol,
+            underlying: contract.symbol,
+            type: (contract.right === "C" ? "call" : "put") as OptionType,
+            style: "american" as const,
+            strike: contract.strike ?? 0,
+            expiration: new Date(contract.lastTradeDateOrContractMonth ?? ""),
+            multiplier: parseInt(contract.multiplier ?? "100", 10),
+            exchange: contract.exchange ?? "SMART",
+            conId: contract.conId,
+          }
+        : {
+            symbol: contract.symbol,
+            exchange: contract.exchange ?? "SMART",
+            type: "stock" as const,
+          },
+      quantity: pos,
+      averageCost: averageCost,
+      marketValue: marketValue,
+      unrealizedPnL: unrealizedPnL,
+      realizedPnL: realizedPnL,
+    };
+
+    this.livePositions.set(key, position);
+
+    log.debug(
+      `Portfolio update: ${contract.symbol} ${contract.secType} ` +
+      `${contract.strike ?? ""} ${contract.right ?? ""} — ` +
+      `qty: ${pos}, mktVal: $${marketValue.toFixed(2)}, ` +
+      `uPnL: $${unrealizedPnL.toFixed(2)}`
+    );
   }
 
   /**
@@ -678,11 +746,15 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
 
   /**
    * Build a full portfolio snapshot with Greeks and risk metrics.
+   *
+   * Prefers live positions (from updatePortfolioValue) which include
+   * market value and unrealized P&L. Falls back to reqPositions which
+   * only gives contract + qty + avgCost (P&L will be 0).
    */
   async getFullPortfolio(): Promise<Portfolio> {
     log.info("Building full portfolio snapshot...");
 
-    const [accountSummary, positions] = await Promise.all([
+    const [accountSummary, barePositions] = await Promise.all([
       this.getAccountSummary().catch((err) => {
         log.warn("Account summary failed, using defaults", { error: String(err) });
         return this.buildDefaultAccount();
@@ -694,6 +766,26 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     ]);
 
     const account = this.normalizeAccount(accountSummary);
+
+    // ── Prefer live positions (with P&L) over bare reqPositions (without P&L) ──
+    // updatePortfolioValue gives us: marketValue, unrealizedPnL, realizedPnL
+    // reqPositions only gives us: contract, quantity, averageCost
+    let positions: Position[];
+    if (this.livePositions.size > 0) {
+      positions = Array.from(this.livePositions.values());
+      log.info(
+        `Using ${positions.length} live positions with P&L data ` +
+        `(total uPnL: $${positions.reduce((s, p) => s + p.unrealizedPnL, 0).toFixed(2)})`
+      );
+    } else if (barePositions.length > 0) {
+      positions = barePositions;
+      log.warn(
+        `Using ${barePositions.length} bare positions from reqPositions — ` +
+        `P&L will be $0 (live subscription data not yet available)`
+      );
+    } else {
+      positions = [];
+    }
 
     // Aggregate portfolio Greeks
     const greeks = this.aggregatePortfolioGreeks(positions);
@@ -925,6 +1017,10 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     account: string, contract: any, pos: number, avgCost: number
   ): void {
     const key = `${contract.symbol}-${contract.secType}-${contract.strike ?? 0}`;
+    const liveKey = `${contract.symbol}-${contract.secType}-${contract.strike ?? 0}-${contract.right ?? ""}-${contract.lastTradeDateOrContractMonth ?? ""}`;
+
+    // Check if we already have live data with P&L for this position
+    const liveData = this.livePositions.get(liveKey);
 
     const isOption = contract.secType === "OPT";
     const position: Position = {
@@ -932,8 +1028,8 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         ? {
             symbol: contract.localSymbol ?? contract.symbol,
             underlying: contract.symbol,
-            type: contract.right === "C" ? "call" : "put",
-            style: "american",
+            type: (contract.right === "C" ? "call" : "put") as OptionType,
+            style: "american" as const,
             strike: contract.strike ?? 0,
             expiration: new Date(contract.lastTradeDateOrContractMonth ?? ""),
             multiplier: parseInt(contract.multiplier ?? "100", 10),
@@ -947,9 +1043,10 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           },
       quantity: pos,
       averageCost: avgCost,
-      marketValue: 0,
-      unrealizedPnL: 0,
-      realizedPnL: 0,
+      // Use live data if available, otherwise 0 (reqPositions doesn't provide these)
+      marketValue: liveData?.marketValue ?? 0,
+      unrealizedPnL: liveData?.unrealizedPnL ?? 0,
+      realizedPnL: liveData?.realizedPnL ?? 0,
     };
 
     this.positions.set(key, position);
