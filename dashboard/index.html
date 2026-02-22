@@ -1030,7 +1030,8 @@ function PositionsTable({ positions }) {
     const right = type === "call" ? "C" : "P";
     const rollStrikeDiff = 5;
     const newExpDate = nextMonthlyExpiration(21);
-    const newExpISO = newExpDate.toISOString();
+    // Build YYYYMMDD using local timezone (not UTC!) to avoid date shift
+    const newExpYYYYMMDD = `${newExpDate.getFullYear()}${String(newExpDate.getMonth()+1).padStart(2,"0")}${String(newExpDate.getDate()).padStart(2,"0")}`;
 
     // Roll Out target: same strike, new expiration
     const rollOutKey = `${underlying}-${right}-${p.contract.strike}-${newExpDate.getTime()}`;
@@ -1050,8 +1051,8 @@ function PositionsTable({ positions }) {
       }
     };
 
-    fetchIfNeeded(rollOutKey, underlying, p.contract.strike, right, newExpISO);
-    fetchIfNeeded(rollShiftKey, underlying, shiftedStrike, right, newExpISO);
+    fetchIfNeeded(rollOutKey, underlying, p.contract.strike, right, newExpYYYYMMDD);
+    fetchIfNeeded(rollShiftKey, underlying, shiftedStrike, right, newExpYYYYMMDD);
   }, [expandedPos, positions]);
 
   const handleClose = async (key, legs) => {
@@ -1874,7 +1875,7 @@ function PositionsTable({ positions }) {
                         const newExpStr = newExpDate.toLocaleDateString("en-US", {
                           weekday: "short", month: "short", day: "numeric", year: "2-digit",
                         });
-                        const newExpISO = newExpDate.toISOString();
+                        // Use local-timezone YYYYMMDD everywhere — NOT .toISOString() which shifts to UTC
                         const newExpIBKR = `${newExpDate.getFullYear()}${String(newExpDate.getMonth()+1).padStart(2,"0")}${String(newExpDate.getDate()).padStart(2,"0")}`;
 
                         const recoveryOptions = [];
@@ -1903,7 +1904,7 @@ function PositionsTable({ positions }) {
                               },
                               {
                                 symbol: underlying, type: type, strike: p.contract.strike,
-                                expiration: newExpISO, side: "sell",
+                                expiration: newExpIBKR, side: "sell",
                                 quantity: Math.abs(p.quantity),
                                 price: rollOutNewPrice,
                                 exchange: p.contract.exchange || "SMART",
@@ -1946,7 +1947,7 @@ function PositionsTable({ positions }) {
                                 },
                                 {
                                   symbol: underlying, type: "put", strike: shiftedStrike,
-                                  expiration: newExpISO, side: "sell",
+                                  expiration: newExpIBKR, side: "sell",
                                   quantity: Math.abs(p.quantity),
                                   price: rollShiftNewPrice,
                                   exchange: p.contract.exchange || "SMART",
@@ -1989,7 +1990,7 @@ function PositionsTable({ positions }) {
                                 },
                                 {
                                   symbol: underlying, type: "call", strike: shiftedStrike,
-                                  expiration: newExpISO, side: "sell",
+                                  expiration: newExpIBKR, side: "sell",
                                   quantity: Math.abs(p.quantity),
                                   price: rollShiftNewPrice,
                                   exchange: p.contract.exchange || "SMART",
@@ -2061,7 +2062,7 @@ function PositionsTable({ positions }) {
                               },
                               {
                                 symbol: underlying, type: type, strike: p.contract.strike,
-                                expiration: newExpISO, side: "buy",
+                                expiration: newExpIBKR, side: "buy",
                                 quantity: Math.abs(p.quantity),
                                 price: rollOutNewPrice,
                                 exchange: p.contract.exchange || "SMART",

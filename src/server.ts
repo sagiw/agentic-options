@@ -514,7 +514,16 @@ app.post("/api/close", async (req, res) => {
           type: l.type,
           style: "american" as const,
           strike: l.strike || 0,
-          expiration: l.expiration ? new Date(l.expiration) : new Date(),
+          expiration: l.expiration
+            ? (/^\d{8}$/.test(String(l.expiration))
+              // YYYYMMDD → parse as local date (avoid UTC shift)
+              ? new Date(
+                  parseInt(String(l.expiration).slice(0, 4)),
+                  parseInt(String(l.expiration).slice(4, 6)) - 1,
+                  parseInt(String(l.expiration).slice(6, 8))
+                )
+              : new Date(l.expiration))
+            : new Date(),
           multiplier: 100,
           exchange: l.exchange || "SMART",
         },
