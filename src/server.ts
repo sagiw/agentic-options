@@ -587,20 +587,56 @@ app.get("/api/nbbo", async (req, res) => {
       return res.json({ success: false, error: "IBKR not connected" });
     }
 
-    const expDate = new Date(String(expiration));
-    const expStr = `${expDate.getFullYear()}${String(expDate.getMonth() + 1).padStart(2, "0")}${String(expDate.getDate()).padStart(2, "0")}`;
+    const symStr = String(symbol).toUpperCase().trim();
+    const strikeNum = parseFloat(String(strike));
+    const rightStr = String(right).toUpperCase().trim();
+    const rightChar: "P" | "C" = rightStr === "P" || rightStr === "PUT" ? "P" : "C";
 
+    // ── Parse expiration robustly ──
+    // Accept YYYYMMDD directly, or ISO date string, or "YYYY-MM-DD"
+    let expStr: string;
+    const expRaw = String(expiration).trim();
+    if (/^\d{8}$/.test(expRaw)) {
+      // Already YYYYMMDD format
+      expStr = expRaw;
+    } else if (/^\d{4}-\d{2}-\d{2}$/.test(expRaw)) {
+      // "YYYY-MM-DD" — parse directly, no timezone issues
+      expStr = expRaw.replace(/-/g, "");
+    } else {
+      // ISO string or other Date-parsable format — use UTC to avoid timezone shift
+      const expDate = new Date(expRaw);
+      expStr = `${expDate.getUTCFullYear()}${String(expDate.getUTCMonth() + 1).padStart(2, "0")}${String(expDate.getUTCDate()).padStart(2, "0")}`;
+    }
+
+    log.info(`NBBO request: ${symStr} ${strikeNum}${rightChar} exp ${expStr}`);
+
+    // ── Step 1: Validate contract exists via reqContractDetails ──
+    const conId = await ibkr.resolveOptionConId({
+      symbol: symStr,
+      strike: strikeNum,
+      right: rightChar,
+      expiration: expStr,
+    });
+
+    if (!conId) {
+      return res.json({
+        success: false,
+        error: `Contract not found: ${symStr} ${rightChar} $${strikeNum} exp ${expStr}. Check strike/expiration date exist in IBKR option chain.`,
+      });
+    }
+
+    // ── Step 2: Request NBBO snapshot ──
     const nbbo = await ibkr.getOptionNBBO({
-      symbol: String(symbol),
-      strike: parseFloat(String(strike)),
-      right: String(right).toUpperCase() === "P" ? "P" : "C",
+      symbol: symStr,
+      strike: strikeNum,
+      right: rightChar,
       expiration: expStr,
     });
 
     if (!nbbo) {
       return res.json({
         success: false,
-        error: `No NBBO data for ${symbol} ${right} $${strike} exp ${expStr}`,
+        error: `Contract found (conId ${conId}) but no market data for ${symStr} ${rightChar} $${strikeNum} exp ${expStr}. Market may be closed or no data subscription.`,
       });
     }
 
@@ -611,13 +647,15 @@ app.get("/api/nbbo", async (req, res) => {
         ask: nbbo.ask,
         mid: nbbo.mid,
         last: nbbo.last,
-        symbol: String(symbol),
-        strike: parseFloat(String(strike)),
-        right: String(right).toUpperCase(),
+        symbol: symStr,
+        strike: strikeNum,
+        right: rightChar,
         expiration: expStr,
+        conId,
       },
     });
   } catch (err) {
+    log.error(`NBBO endpoint error: ${err}`);
     res.status(500).json({ success: false, error: String(err) });
   }
 });

@@ -939,17 +939,30 @@ function nextMonthlyExpiration(minDaysOut) {
 }
 
 // ── Fetch real IBKR NBBO for a roll target option ──
-// Returns { bid, ask, mid, last } or null
+// Returns { bid, ask, mid, last, conId } or null
 async function fetchRollNBBO(symbol, strike, right, expiration) {
   try {
+    // Send expiration as YYYYMMDD if it's a Date, to avoid timezone issues
+    let expStr;
+    if (expiration instanceof Date) {
+      expStr = `${expiration.getFullYear()}${String(expiration.getMonth()+1).padStart(2,"0")}${String(expiration.getDate()).padStart(2,"0")}`;
+    } else {
+      expStr = String(expiration);
+    }
     const params = new URLSearchParams({
-      symbol, strike: String(strike), right,
-      expiration: expiration instanceof Date ? expiration.toISOString() : String(expiration),
+      symbol, strike: String(strike), right, expiration: expStr,
     });
+    console.log("[NBBO] Fetching:", params.toString());
     const res = await fetch(API + "/nbbo?" + params.toString());
     const json = await res.json();
+    if (!json.success) {
+      console.warn("[NBBO] Failed:", json.error);
+    }
     return json.success ? json.data : null;
-  } catch { return null; }
+  } catch (err) {
+    console.warn("[NBBO] Error:", err);
+    return null;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════

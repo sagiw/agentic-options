@@ -842,8 +842,8 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     if (!this.connected) return null;
 
     const reqId = this.nextReqId++;
-    const prices: { bid: number; ask: number; last: number } = {
-      bid: 0, ask: 0, last: 0,
+    const prices: { bid: number; ask: number; last: number; close: number } = {
+      bid: 0, ask: 0, last: 0, close: 0,
     };
 
     const contract: any = {
@@ -857,6 +857,9 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       multiplier: "100",
     };
 
+    const tag = `${params.symbol} ${params.strike}${params.right} exp ${params.expiration}`;
+    log.info(`NBBO snapshot request [${reqId}]: ${tag}`);
+
     return new Promise((resolve) => {
       let resolved = false;
 
@@ -867,6 +870,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if (tickType === 1) prices.bid = price;
         else if (tickType === 2) prices.ask = price;
         else if (tickType === 4) prices.last = price;
+        else if (tickType === 9) prices.close = price;
 
         // Resolve as soon as we have both bid and ask
         if (prices.bid > 0 && prices.ask > 0 && !resolved) {
@@ -874,7 +878,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           cleanup();
           const mid = Math.round(((prices.bid + prices.ask) / 2) * 100) / 100;
           log.info(
-            `NBBO snapshot ${params.symbol} ${params.strike}${params.right}: ` +
+            `NBBO snapshot [${reqId}] ${tag}: ` +
             `bid=$${prices.bid} ask=$${prices.ask} mid=$${mid} last=$${prices.last}`
           );
           resolve({ bid: prices.bid, ask: prices.ask, mid, last: prices.last });
@@ -885,20 +889,51 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if (_reqId !== reqId || resolved) return;
         resolved = true;
         cleanup();
-        // We might have partial data
-        if (prices.bid > 0 || prices.ask > 0 || prices.last > 0) {
-          const bid = prices.bid || prices.last * 0.95;
-          const ask = prices.ask || prices.last * 1.05;
-          const mid = Math.round(((bid + ask) / 2) * 100) / 100;
-          resolve({ bid, ask, mid, last: prices.last });
+        // We might have partial data — use whatever we have
+        if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
+          const refPrice = prices.last || prices.close || 0;
+          const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
+          const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
+          if (bid > 0 || ask > 0) {
+            const mid = Math.round(((bid + ask) / 2) * 100) / 100;
+            log.info(`NBBO snapshot [${reqId}] ${tag} (snapshotEnd, partial): bid=$${bid} ask=$${ask} mid=$${mid}`);
+            resolve({ bid, ask, mid, last: prices.last || prices.close });
+          } else {
+            log.warn(`NBBO snapshot [${reqId}] ${tag}: snapshotEnd with no usable prices`);
+            resolve(null);
+          }
         } else {
+          log.warn(`NBBO snapshot [${reqId}] ${tag}: snapshotEnd with no data`);
+          resolve(null);
+        }
+      };
+
+      // ── Handle IBKR error events (e.g., contract not found, no mkt data perms) ──
+      const onError = (_reqId: number, errorCode: number, errorMsg: string) => {
+        if (_reqId !== reqId || resolved) return;
+        // Certain error codes are non-fatal informational messages
+        // 2104, 2106, 2158 = market data farm connection messages
+        // 2119 = market data farm is connecting
+        if ([2104, 2106, 2119, 2158].includes(errorCode)) return;
+
+        log.warn(`NBBO snapshot [${reqId}] ${tag}: IBKR error ${errorCode}: ${errorMsg}`);
+        // Fatal errors: resolve null immediately
+        // 200 = No security definition found
+        // 354 = Requested market data is not subscribed
+        // 10168 = Requested market data is not subscribed (delayed)
+        // 162 = Historical market data Service error
+        if ([200, 354, 10168, 162, 10187, 10090].includes(errorCode)) {
+          resolved = true;
+          cleanup();
           resolve(null);
         }
       };
 
       const cleanup = () => {
-        this.ib.removeListener(EventNameRef.tickPrice, onTick);
-        this.ib.removeListener(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+        const EN = this.eventNameRef!;
+        this.ib.removeListener(EN.tickPrice, onTick);
+        this.ib.removeListener(EN.tickSnapshotEnd, onSnapshotEnd);
+        this.ib.removeListener(EN.error, onError);
         try { this.ib.cancelMktData(reqId); } catch {}
       };
 
@@ -906,39 +941,42 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       const EventNameRef = this.eventNameRef!;
       this.ib.on(EventNameRef.tickPrice, onTick);
       this.ib.on(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+      this.ib.on(EventNameRef.error, onError);
 
       // Request snapshot (5th param = true means snapshot, not streaming)
       try {
         this.ib.reqMktData(reqId, contract, "", true, false);
       } catch (err) {
-        log.warn(`NBBO snapshot request failed: ${err}`);
+        log.warn(`NBBO snapshot [${reqId}] request failed: ${err}`);
         cleanup();
         resolve(null);
         return;
       }
 
-      // Timeout — resolve with whatever we have after 4 seconds
+      // Timeout — resolve with whatever we have after 8 seconds
+      // (increased from 4s to handle slow responses, outside-hours data)
       setTimeout(() => {
         if (!resolved) {
           resolved = true;
           cleanup();
-          if (prices.bid > 0 || prices.ask > 0 || prices.last > 0) {
-            const bid = prices.bid || prices.last * 0.95;
-            const ask = prices.ask || prices.last * 1.05;
+          if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
+            const refPrice = prices.last || prices.close || 0;
+            const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
+            const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
             const mid = Math.round(((bid + ask) / 2) * 100) / 100;
             log.info(
-              `NBBO snapshot (timeout, partial) ${params.symbol} ${params.strike}${params.right}: ` +
+              `NBBO snapshot [${reqId}] ${tag} (timeout, partial): ` +
               `bid=$${bid.toFixed(2)} ask=$${ask.toFixed(2)} mid=$${mid.toFixed(2)}`
             );
-            resolve({ bid, ask, mid, last: prices.last });
+            resolve({ bid, ask, mid, last: prices.last || prices.close });
           } else {
             log.warn(
-              `NBBO snapshot timeout — no data for ${params.symbol} ${params.strike}${params.right}`
+              `NBBO snapshot [${reqId}] ${tag}: timeout — no data received`
             );
             resolve(null);
           }
         }
-      }, 4_000);
+      }, 8_000);
     });
   }
 
