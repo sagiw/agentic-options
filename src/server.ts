@@ -652,6 +652,7 @@ app.get("/api/nbbo", async (req, res) => {
         right: rightChar,
         expiration: expStr,
         conId,
+        delayed: nbbo.delayed || false,
       },
     });
   } catch (err) {

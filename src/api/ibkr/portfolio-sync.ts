@@ -838,12 +838,12 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     right: "C" | "P";
     expiration: string; // YYYYMMDD
     exchange?: string;
-  }): Promise<{ bid: number; ask: number; mid: number; last: number } | null> {
+  }): Promise<{ bid: number; ask: number; mid: number; last: number; delayed?: boolean } | null> {
     if (!this.connected) return null;
 
     const reqId = this.nextReqId++;
-    const prices: { bid: number; ask: number; last: number; close: number } = {
-      bid: 0, ask: 0, last: 0, close: 0,
+    const prices: { bid: number; ask: number; last: number; close: number; isDelayed: boolean } = {
+      bid: 0, ask: 0, last: 0, close: 0, isDelayed: false,
     };
 
     const contract: any = {
@@ -860,28 +860,52 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     const tag = `${params.symbol} ${params.strike}${params.right} exp ${params.expiration}`;
     log.info(`NBBO snapshot request [${reqId}]: ${tag}`);
 
+    // ── Request delayed-frozen data type so we get prices even when market is closed ──
+    // MarketDataType: 1=REALTIME, 2=FROZEN, 3=DELAYED, 4=DELAYED_FROZEN
+    // DELAYED_FROZEN returns the last known frozen data if delayed is not available
+    try {
+      this.ib.reqMarketDataType(4);
+      log.info(`NBBO [${reqId}]: Set market data type to DELAYED_FROZEN (4)`);
+    } catch (err) {
+      log.warn(`NBBO [${reqId}]: Failed to set market data type: ${err}`);
+    }
+
     return new Promise((resolve) => {
       let resolved = false;
+
+      const finalize = () => {
+        // Restore to real-time data type after snapshot
+        try { this.ib.reqMarketDataType(1); } catch {}
+      };
 
       const onTick = (_reqId: number, tickType: number, price: number) => {
         if (_reqId !== reqId || price <= 0 || price === -1) return;
 
-        // tickType: 1=bid, 2=ask, 4=last, 6=high, 7=low, 9=close
+        // Real-time ticks: 1=bid, 2=ask, 4=last, 6=high, 7=low, 9=close
+        // Delayed ticks:   66=bid, 67=ask, 68=last, 75=close
         if (tickType === 1) prices.bid = price;
         else if (tickType === 2) prices.ask = price;
         else if (tickType === 4) prices.last = price;
         else if (tickType === 9) prices.close = price;
+        else if (tickType === 66) { prices.bid = price; prices.isDelayed = true; }
+        else if (tickType === 67) { prices.ask = price; prices.isDelayed = true; }
+        else if (tickType === 68) { prices.last = price; prices.isDelayed = true; }
+        else if (tickType === 75) { prices.close = price; prices.isDelayed = true; }
+
+        log.info(`NBBO [${reqId}] tick: type=${tickType} price=${price} (${prices.isDelayed ? "delayed" : "live"})`);
 
         // Resolve as soon as we have both bid and ask
         if (prices.bid > 0 && prices.ask > 0 && !resolved) {
           resolved = true;
           cleanup();
+          finalize();
           const mid = Math.round(((prices.bid + prices.ask) / 2) * 100) / 100;
           log.info(
             `NBBO snapshot [${reqId}] ${tag}: ` +
-            `bid=$${prices.bid} ask=$${prices.ask} mid=$${mid} last=$${prices.last}`
+            `bid=$${prices.bid} ask=$${prices.ask} mid=$${mid} last=$${prices.last}` +
+            (prices.isDelayed ? " (DELAYED)" : " (LIVE)")
           );
-          resolve({ bid: prices.bid, ask: prices.ask, mid, last: prices.last });
+          resolve({ bid: prices.bid, ask: prices.ask, mid, last: prices.last, delayed: prices.isDelayed });
         }
       };
 
@@ -889,6 +913,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if (_reqId !== reqId || resolved) return;
         resolved = true;
         cleanup();
+        finalize();
         // We might have partial data — use whatever we have
         if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
           const refPrice = prices.last || prices.close || 0;
@@ -897,7 +922,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           if (bid > 0 || ask > 0) {
             const mid = Math.round(((bid + ask) / 2) * 100) / 100;
             log.info(`NBBO snapshot [${reqId}] ${tag} (snapshotEnd, partial): bid=$${bid} ask=$${ask} mid=$${mid}`);
-            resolve({ bid, ask, mid, last: prices.last || prices.close });
+            resolve({ bid, ask, mid, last: prices.last || prices.close, delayed: prices.isDelayed });
           } else {
             log.warn(`NBBO snapshot [${reqId}] ${tag}: snapshotEnd with no usable prices`);
             resolve(null);
@@ -914,7 +939,14 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         // Certain error codes are non-fatal informational messages
         // 2104, 2106, 2158 = market data farm connection messages
         // 2119 = market data farm is connecting
-        if ([2104, 2106, 2119, 2158].includes(errorCode)) return;
+        // 10167 = "Displaying delayed data" — this is expected and good
+        if ([2104, 2106, 2119, 2158, 10167].includes(errorCode)) {
+          if (errorCode === 10167) {
+            log.info(`NBBO [${reqId}] ${tag}: IBKR switched to delayed data`);
+            prices.isDelayed = true;
+          }
+          return;
+        }
 
         log.warn(`NBBO snapshot [${reqId}] ${tag}: IBKR error ${errorCode}: ${errorMsg}`);
         // Fatal errors: resolve null immediately
@@ -925,6 +957,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if ([200, 354, 10168, 162, 10187, 10090].includes(errorCode)) {
           resolved = true;
           cleanup();
+          finalize();
           resolve(null);
         }
       };
@@ -949,16 +982,17 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       } catch (err) {
         log.warn(`NBBO snapshot [${reqId}] request failed: ${err}`);
         cleanup();
+        finalize();
         resolve(null);
         return;
       }
 
       // Timeout — resolve with whatever we have after 8 seconds
-      // (increased from 4s to handle slow responses, outside-hours data)
       setTimeout(() => {
         if (!resolved) {
           resolved = true;
           cleanup();
+          finalize();
           if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
             const refPrice = prices.last || prices.close || 0;
             const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
@@ -968,7 +1002,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
               `NBBO snapshot [${reqId}] ${tag} (timeout, partial): ` +
               `bid=$${bid.toFixed(2)} ask=$${ask.toFixed(2)} mid=$${mid.toFixed(2)}`
             );
-            resolve({ bid, ask, mid, last: prices.last || prices.close });
+            resolve({ bid, ask, mid, last: prices.last || prices.close, delayed: prices.isDelayed });
           } else {
             log.warn(
               `NBBO snapshot [${reqId}] ${tag}: timeout — no data received`
