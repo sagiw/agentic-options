@@ -5,8 +5,9 @@
  * Submits through the connected PortfolioSync instance (which holds
  * the live IBApi connection and valid order IDs).
  *
- * Each leg is submitted as an individual limit order.
- * Future: multi-leg combo/BAG orders for tighter fills.
+ * Multi-leg strategies are submitted as combo/BAG orders — both legs
+ * execute atomically (all or nothing), preventing partial fills.
+ * Single-leg strategies are submitted as individual limit orders.
  */
 
 import { agentLogger } from "../../utils/logger.js";
@@ -24,11 +25,27 @@ export interface SubmitResult {
   message: string;
 }
 
+/** Resolved leg info after mapping synthetic → real IBKR contracts */
+interface ResolvedLeg {
+  leg: StrategyLeg;
+  underlying: string;
+  strike: number;
+  right: "C" | "P";
+  expiration: string; // YYYYMMDD
+  conId: number | null;
+  nbboMid: number | null; // real market mid-price from NBBO
+}
+
 /**
  * Submit a complete options strategy as IBKR order(s).
  *
- * Each leg is submitted as an individual limit order.
- * Returns the IBKR order IDs for status tracking.
+ * For multi-leg strategies (spreads, iron condors, etc.):
+ *   → Submits as a single combo/BAG order (atomic execution).
+ *
+ * For single-leg strategies (long call, cash-secured put, etc.):
+ *   → Submits as an individual limit order.
+ *
+ * Falls back to individual leg orders if combo submission fails.
  */
 export async function submitStrategy(
   ibkr: PortfolioSync,
@@ -55,6 +72,184 @@ export async function submitStrategy(
     };
   }
 
+  // For multi-leg option strategies, try combo order first
+  const optionLegs = strategy.legs.filter(
+    (l) => l.contract.type === "call" || l.contract.type === "put"
+  );
+
+  if (optionLegs.length >= 2) {
+    log.info(`Multi-leg strategy detected (${optionLegs.length} option legs) — attempting combo/BAG order`);
+    try {
+      const comboResult = await submitComboOrder(ibkr, strategy, orderType);
+      if (comboResult.success) {
+        return comboResult;
+      }
+      log.warn(`Combo order failed: ${comboResult.message} — falling back to individual legs`);
+    } catch (err) {
+      log.warn(`Combo order threw: ${err} — falling back to individual legs`);
+    }
+  }
+
+  // Single-leg strategy or combo fallback: submit each leg individually
+  return submitIndividualLegs(ibkr, strategy, orderType);
+}
+
+/**
+ * Submit a multi-leg strategy as a single combo/BAG order.
+ *
+ * Steps:
+ *   1. Resolve each leg's synthetic contract → real IBKR contract
+ *   2. Get each leg's conId (required for combo order)
+ *   3. Get NBBO for each leg to calculate realistic net price
+ *   4. Build a BAG contract with comboLegs and submit
+ */
+async function submitComboOrder(
+  ibkr: PortfolioSync,
+  strategy: OptionsStrategy,
+  orderType: "LMT" | "MKT"
+): Promise<SubmitResult> {
+  // Step 1+2: Resolve all legs and get their conIds
+  const resolvedLegs: ResolvedLeg[] = [];
+
+  for (const leg of strategy.legs) {
+    const isOption = leg.contract.type === "call" || leg.contract.type === "put";
+    if (!isOption) {
+      log.warn(`Non-option leg in combo: ${leg.contract.symbol} — combo not supported`);
+      return {
+        success: false,
+        orderIds: [],
+        legs: strategy.legs.length,
+        message: "Combo orders only support option legs",
+      };
+    }
+
+    const underlying = (leg.contract as any).underlying ?? leg.contract.symbol;
+    let strike = leg.contract.strike;
+    let expiration = formatExpiration(leg.contract.expiration);
+    const right: "C" | "P" = leg.contract.type === "call" ? "C" : "P";
+
+    // Resolve synthetic → real contract
+    const resolved = await ibkr.resolveOptionContract(
+      underlying,
+      strike,
+      leg.contract.expiration
+    );
+    if (resolved) {
+      log.info(
+        `Resolved: ${underlying} ${strike}${right} exp ${expiration} → ` +
+        `strike ${resolved.strike}, exp ${resolved.expiration}`
+      );
+      strike = resolved.strike;
+      expiration = resolved.expiration;
+    }
+
+    // Get the conId for this specific option contract
+    const conId = await ibkr.resolveOptionConId({
+      symbol: underlying,
+      strike,
+      right,
+      expiration,
+      exchange: leg.contract.exchange || "SMART",
+    });
+
+    if (!conId) {
+      log.warn(`Could not resolve conId for ${underlying} ${strike}${right} — combo not possible`);
+      return {
+        success: false,
+        orderIds: [],
+        legs: strategy.legs.length,
+        message: `Could not resolve contract ID for ${underlying} ${strike}${right} exp ${expiration}`,
+      };
+    }
+
+    // Get NBBO for this leg to calculate realistic net price
+    let nbboMid: number | null = null;
+    try {
+      const nbbo = await ibkr.getOptionNBBO({
+        symbol: underlying,
+        strike,
+        right,
+        expiration,
+        exchange: leg.contract.exchange || "SMART",
+      });
+      if (nbbo && nbbo.mid > 0) {
+        nbboMid = nbbo.mid;
+      }
+    } catch {
+      // Non-fatal — will use theoretical price
+    }
+
+    resolvedLegs.push({
+      leg,
+      underlying,
+      strike,
+      right,
+      expiration,
+      conId,
+      nbboMid,
+    });
+
+    log.info(
+      `Combo leg resolved: conId=${conId}, ${leg.side} ${underlying} ${strike}${right} ` +
+      `exp ${expiration}, price=$${(leg.price ?? 0).toFixed(2)}` +
+      (nbboMid ? `, NBBO mid=$${nbboMid.toFixed(2)}` : "")
+    );
+  }
+
+  // Step 3: Calculate net combo price
+  // Net price = sum of (leg price × direction), where BUY = +, SELL = -
+  // Use NBBO mid-prices when available for a realistic fill price
+  let netPrice = 0;
+  for (const rl of resolvedLegs) {
+    const price = rl.nbboMid ?? rl.leg.price ?? 0;
+    const direction = rl.leg.side === "buy" ? -1 : 1; // BUY costs money (-), SELL receives (+)
+    netPrice += price * direction * rl.leg.quantity;
+  }
+  // Round to tick size (combo prices use $0.01 increments)
+  netPrice = Math.round(netPrice * 100) / 100;
+
+  // Determine combo action: if netPrice > 0, we're receiving a net credit (SELL combo)
+  // if netPrice < 0, we're paying a net debit (BUY combo)
+  const comboAction: "BUY" | "SELL" = netPrice >= 0 ? "SELL" : "BUY";
+  const comboPrice = Math.abs(netPrice);
+
+  log.info(
+    `Combo net price: $${netPrice.toFixed(2)} → ${comboAction} @ $${comboPrice.toFixed(2)}`
+  );
+
+  // Step 4: Submit the combo order
+  const underlying = resolvedLegs[0].underlying;
+  const orderId = await ibkr.placeComboOrder({
+    symbol: underlying,
+    legs: resolvedLegs.map((rl) => ({
+      conId: rl.conId!,
+      action: rl.leg.side === "buy" ? "BUY" : "SELL",
+      ratio: rl.leg.quantity,
+      exchange: "SMART",
+    })),
+    action: comboAction,
+    quantity: 1, // combo quantity = 1 (ratios handle per-leg quantities)
+    orderType,
+    limitPrice: orderType === "LMT" ? comboPrice : undefined,
+  });
+
+  return {
+    success: true,
+    orderIds: [orderId],
+    legs: strategy.legs.length,
+    message: `Combo order submitted to IBKR: ${strategy.legs.length} legs as single atomic order (net ${comboAction} $${comboPrice.toFixed(2)})`,
+  };
+}
+
+/**
+ * Submit each leg as an individual order (original behavior).
+ * Used for single-leg strategies or as fallback when combo fails.
+ */
+async function submitIndividualLegs(
+  ibkr: PortfolioSync,
+  strategy: OptionsStrategy,
+  orderType: "LMT" | "MKT"
+): Promise<SubmitResult> {
   const orderIds: number[] = [];
   const errors: string[] = [];
 
@@ -88,7 +283,7 @@ export async function submitStrategy(
     legs: strategy.legs.length,
     message:
       orderIds.length === strategy.legs.length
-        ? `All ${orderIds.length} leg(s) submitted to IBKR`
+        ? `All ${orderIds.length} leg(s) submitted individually to IBKR`
         : `${orderIds.length}/${strategy.legs.length} legs submitted (${errors.length} failed)`,
   };
 }
@@ -175,26 +370,21 @@ async function submitLeg(
 
       if (nbbo && nbbo.bid > 0 && nbbo.ask > 0) {
         const oldPrice = tickRoundedPrice;
-        const spread = nbbo.ask - nbbo.bid;
 
         if (leg.side === "buy") {
           // BUY: use mid-price (or theoretical if within NBBO spread).
           // Never exceed ask, never go below bid.
           if (tickRoundedPrice > nbbo.ask * 1.05 || tickRoundedPrice < nbbo.bid * 0.5) {
-            // Price is way off — use mid price for a fair fill
             tickRoundedPrice = nbbo.mid;
           }
-          // Clamp: willing to pay up to ask, but not less than bid
           tickRoundedPrice = Math.min(tickRoundedPrice, nbbo.ask);
           tickRoundedPrice = Math.max(tickRoundedPrice, nbbo.bid);
         } else {
           // SELL: use mid-price (or theoretical if within NBBO spread).
           // Never go below bid, never exceed ask.
           if (tickRoundedPrice < nbbo.bid * 0.5 || tickRoundedPrice > nbbo.ask * 1.5) {
-            // Price is way off — use mid price for a fair fill
             tickRoundedPrice = nbbo.mid;
           }
-          // Clamp: willing to sell down to bid, but not more than ask
           tickRoundedPrice = Math.max(tickRoundedPrice, nbbo.bid);
           tickRoundedPrice = Math.min(tickRoundedPrice, nbbo.ask);
         }
@@ -215,7 +405,6 @@ async function submitLeg(
       }
     } catch (err) {
       log.warn(`NBBO lookup failed for ${underlying} ${strike}${right}: ${err}`);
-      // Continue with theoretical price — IBKR may still accept it
     }
   }
 

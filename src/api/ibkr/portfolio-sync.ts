@@ -943,8 +943,175 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   }
 
   // ══════════════════════════════════════════════════════════
+  //  CONTRACT ID RESOLUTION (for combo orders)
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Resolve the IBKR conId for a specific option contract.
+   * Required for combo/BAG orders — each leg needs its conId.
+   */
+  async resolveOptionConId(params: {
+    symbol: string;
+    strike: number;
+    right: "C" | "P";
+    expiration: string; // YYYYMMDD
+    exchange?: string;
+  }): Promise<number | null> {
+    if (!this.connected) return null;
+
+    const cacheKey = `${params.symbol}-${params.strike}-${params.right}-${params.expiration}`;
+    const cached = this.conIdCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < this.CHAIN_CACHE_TTL) {
+      return cached.conId;
+    }
+
+    const reqId = this.nextReqId++;
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const contract: any = {
+        symbol: params.symbol,
+        secType: "OPT",
+        exchange: params.exchange || "SMART",
+        currency: "USD",
+        strike: params.strike,
+        right: params.right,
+        lastTradeDateOrContractMonth: params.expiration,
+        multiplier: "100",
+      };
+
+      const onDetails = (_reqId: number, details: any) => {
+        if (_reqId !== reqId || resolved) return;
+        resolved = true;
+        const conId = details?.contract?.conId ?? details?.conId ?? 0;
+        if (conId > 0) {
+          this.conIdCache.set(cacheKey, { conId, cachedAt: Date.now() });
+          log.info(
+            `Resolved option conId: ${params.symbol} ${params.strike}${params.right} ` +
+            `exp ${params.expiration} → conId ${conId}`
+          );
+        }
+        this.ib.removeListener("contractDetails", onDetails);
+        this.ib.removeListener("contractDetailsEnd", onEnd);
+        resolve(conId > 0 ? conId : null);
+      };
+
+      const onEnd = (_reqId: number) => {
+        if (_reqId !== reqId || resolved) return;
+        resolved = true;
+        this.ib.removeListener("contractDetails", onDetails);
+        this.ib.removeListener("contractDetailsEnd", onEnd);
+        log.warn(`No conId found for ${params.symbol} ${params.strike}${params.right}`);
+        resolve(null);
+      };
+
+      this.ib.on("contractDetails", onDetails);
+      this.ib.on("contractDetailsEnd", onEnd);
+
+      try {
+        this.ib.reqContractDetails(reqId, contract);
+      } catch (err) {
+        log.warn(`reqContractDetails failed for option: ${err}`);
+        this.ib.removeListener("contractDetails", onDetails);
+        this.ib.removeListener("contractDetailsEnd", onEnd);
+        resolve(null);
+        return;
+      }
+
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          this.ib.removeListener("contractDetails", onDetails);
+          this.ib.removeListener("contractDetailsEnd", onEnd);
+          log.warn(`Timeout resolving option conId for ${params.symbol} ${params.strike}${params.right}`);
+          resolve(null);
+        }
+      }, 8_000);
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════
   //  ORDER PLACEMENT
   // ══════════════════════════════════════════════════════════
+
+  /**
+   * Place a combo (BAG) order — all legs execute atomically.
+   * This prevents partial fills where one leg executes but the other doesn't.
+   *
+   * Each leg needs a conId (resolved via resolveOptionConId).
+   * The net limit price is the combined debit/credit for the whole combo.
+   */
+  async placeComboOrder(params: {
+    symbol: string;       // Underlying symbol (e.g. "AAPL")
+    legs: Array<{
+      conId: number;
+      action: "BUY" | "SELL";
+      ratio: number;      // Usually 1
+      exchange?: string;
+    }>;
+    action: "BUY" | "SELL";  // Net direction of the combo
+    quantity: number;
+    orderType: "LMT" | "MKT";
+    limitPrice?: number;      // Net combo price (debit = positive, credit = negative)
+  }): Promise<number> {
+    this.ensureConnected();
+
+    if (this.nextOrderId <= 0) {
+      throw new Error("No valid order ID from IBKR — wait for connection to fully initialize");
+    }
+
+    const orderId = this.nextOrderId++;
+
+    // Build BAG contract with combo legs
+    const contract: any = {
+      symbol: params.symbol,
+      secType: "BAG",
+      exchange: "SMART",
+      currency: "USD",
+      comboLegs: params.legs.map(leg => ({
+        conId: leg.conId,
+        ratio: leg.ratio,
+        action: leg.action,
+        exchange: leg.exchange || "SMART",
+        openClose: 0,  // 0 = same as parent (retail)
+      })),
+    };
+
+    // Build order
+    const order: any = {
+      action: params.action,
+      totalQuantity: params.quantity,
+      orderType: params.orderType === "LMT" ? "LMT" : "MKT",
+      tif: "DAY",
+      transmit: true,
+    };
+
+    if (params.orderType === "LMT" && params.limitPrice !== undefined) {
+      // For combo orders, the limit price is the net debit (positive) or credit (negative)
+      order.lmtPrice = Math.round(params.limitPrice * 100) / 100;
+    }
+
+    log.info(
+      `Placing COMBO order ${orderId}: ${params.action} ${params.quantity}x ${params.symbol} ` +
+      `(${params.legs.length} legs) @ ${params.orderType}` +
+      `${params.limitPrice !== undefined ? ` net $${params.limitPrice.toFixed(2)}` : ""}`
+    );
+    log.info(`  Combo legs: ${JSON.stringify(contract.comboLegs)}`);
+    log.info(`  Order: ${JSON.stringify(order)}`);
+
+    this.placedOrderIds.add(orderId);
+
+    try {
+      this.ib.placeOrder(orderId, contract, order);
+      log.info(`  placeComboOrder(${orderId}) call completed — awaiting IBKR acknowledgment`);
+    } catch (err) {
+      log.error(`  placeComboOrder(${orderId}) threw: ${String(err)}`);
+      throw err;
+    }
+
+    return orderId;
+  }
 
   /**
    * Place an option or stock order through IBKR TWS.
