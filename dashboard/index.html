@@ -1062,7 +1062,8 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
     };
   });
 
-  // Get current underlying price: prefer live IBKR quote, fallback to stock position, then strike midpoint
+  // Get current underlying price: only from real sources (IBKR quote or stock position)
+  // No fallback to strike midpoint — if no real data, don't show the price marker
   let currentPrice = livePrice || 0;
   if (currentPrice <= 0 && allPositions) {
     const stock = allPositions.find(p =>
@@ -1070,11 +1071,6 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
       p.contract.type === "stock" && p.quantity > 0 && p.marketValue > 0
     );
     if (stock) currentPrice = stock.marketValue / stock.quantity;
-  }
-  if (currentPrice <= 0) {
-    // Last resort: estimate from strike midpoint
-    const strikes = chartLegs.map(l => l.strike).filter(Boolean);
-    if (strikes.length) currentPrice = (Math.min(...strikes) + Math.max(...strikes)) / 2;
   }
 
   // Generate payoff curve
@@ -1142,7 +1138,8 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           Payoff at Expiration
         </div>
         <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", flexWrap: "wrap" }}>
-          <span>{underlying}: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b>{livePrice ? "" : " ⏳"}</span>
+          {currentPrice > 0 && <span>{underlying}: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b></span>}
+          {currentPrice <= 0 && <span>{underlying}: <b style={{ color: "var(--text-muted)" }}>Loading... ⏳</b></span>}
           <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{fmt.sign(currentPnL)}</b></span>
           <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{fmt.sign(maxProfit)}</b></span>
           <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.sign(maxLoss)}</b></span>
