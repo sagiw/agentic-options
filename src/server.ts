@@ -307,7 +307,9 @@ app.get("/api/chain/:symbol", async (req, res) => {
  *   puts{}        — { [strike]: { bid, ask, mid, last, delayed } | null }
  */
 const optionChainCache: Record<string, { data: any; cachedAt: number }> = {};
+const chainParamsCache: Record<string, { data: any; cachedAt: number }> = {};
 const CHAIN_CACHE_TTL = 60_000; // 60s
+const PARAMS_CACHE_TTL = 300_000; // 5min — strikes/expirations don't change often
 
 app.get("/api/optionchain/:symbol", async (req, res) => {
   try {
@@ -315,15 +317,22 @@ app.get("/api/optionchain/:symbol", async (req, res) => {
     const expirationParam = (req.query.expiration as string) || "list";
     const range = Math.min(parseInt(req.query.range as string) || 10, 25);
 
-    // Step 1: Get chain params (strikes + expirations) from IBKR
+    // Step 1: Get chain params (strikes + expirations) from IBKR (cached 5min)
     let chainParams: { expirations: string[]; strikes: number[]; exchange: string };
-    try {
-      chainParams = await ibkr.getOptionChainParams(symbol);
-    } catch (err) {
-      return res.status(500).json({
-        success: false,
-        error: `Failed to get option chain for ${symbol}: ${err}`,
-      });
+    const paramsCached = chainParamsCache[symbol];
+    if (paramsCached && Date.now() - paramsCached.cachedAt < PARAMS_CACHE_TTL) {
+      chainParams = paramsCached.data;
+      log.info(`[OptionChain] Using cached chain params for ${symbol}: ${chainParams.strikes.length} strikes, ${chainParams.expirations.length} expirations`);
+    } else {
+      try {
+        chainParams = await ibkr.getOptionChainParams(symbol);
+        chainParamsCache[symbol] = { data: chainParams, cachedAt: Date.now() };
+      } catch (err) {
+        return res.status(500).json({
+          success: false,
+          error: `Failed to get option chain for ${symbol}: ${err}`,
+        });
+      }
     }
 
     if (!chainParams.expirations.length || !chainParams.strikes.length) {
@@ -370,11 +379,13 @@ app.get("/api/optionchain/:symbol", async (req, res) => {
 
     // Step 3: Filter strikes around ATM
     const allStrikes = chainParams.strikes;
+    log.info(`[OptionChain] ${symbol}: ${allStrikes.length} total strikes from IBKR, underlyingPrice=${underlyingPrice}, range=±${range}`);
     const atmIdx = allStrikes.reduce((best, s, i) =>
       Math.abs(s - underlyingPrice) < Math.abs(allStrikes[best] - underlyingPrice) ? i : best, 0);
     const fromIdx = Math.max(0, atmIdx - range);
     const toIdx = Math.min(allStrikes.length - 1, atmIdx + range);
     const strikes = allStrikes.slice(fromIdx, toIdx + 1);
+    log.info(`[OptionChain] ATM strike=${allStrikes[atmIdx]} (idx=${atmIdx}), filtered: ${strikes.length} strikes [${strikes[0]}..${strikes[strikes.length - 1]}]`);
 
     // Step 4: Check cache
     const cacheKey = `${symbol}-${expirationParam}-${fromIdx}-${toIdx}`;

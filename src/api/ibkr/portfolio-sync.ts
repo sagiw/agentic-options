@@ -742,31 +742,52 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         exchange: "SMART",
       };
 
-      this.ib.on("securityDefinitionOptionParameter", (
+      const onParam = (
         _reqId: number, exchange: string, underlyingConId: number,
-        tradingClass: string, multiplier: string,
-        expirations: Set<string>, strikes: Set<number>
+        tradingClass: string, multiplier: string | number,
+        expirations: string[] | Set<string>, strikes: number[] | Set<number>
       ) => {
-        if (_reqId === reqId) {
-          results.exchange = exchange;
-          expirations.forEach((e) => results.expirations.add(e));
-          strikes.forEach((s) => results.strikes.add(s));
-        }
-      });
+        if (_reqId !== reqId) return;
+        results.exchange = exchange;
+        const expArr = Array.isArray(expirations) ? expirations : Array.from(expirations);
+        const strkArr = Array.isArray(strikes) ? strikes : Array.from(strikes);
+        log.info(`[ChainParams] Exchange=${exchange} tradingClass=${tradingClass} expirations=${expArr.length} strikes=${strkArr.length}`);
+        expArr.forEach((e: string) => results.expirations.add(e));
+        strkArr.forEach((s: number) => results.strikes.add(s));
+      };
 
-      this.ib.on("securityDefinitionOptionParameterEnd", (_reqId: number) => {
-        if (_reqId === reqId) {
-          resolve({
-            expirations: Array.from(results.expirations).sort(),
-            strikes: Array.from(results.strikes).sort((a, b) => a - b),
-            exchange: results.exchange,
-          });
+      const onEnd = (_reqId: number) => {
+        if (_reqId !== reqId) return;
+        cleanup();
+        const finalExps = Array.from(results.expirations).sort();
+        const finalStrikes = Array.from(results.strikes).sort((a, b) => a - b);
+        log.info(`[ChainParams] DONE: ${finalExps.length} expirations, ${finalStrikes.length} strikes total`);
+        if (finalStrikes.length <= 30) {
+          log.info(`[ChainParams] All strikes: ${finalStrikes.join(", ")}`);
+        } else {
+          log.info(`[ChainParams] Strike range: ${finalStrikes[0]} - ${finalStrikes[finalStrikes.length - 1]}`);
         }
-      });
+        resolve({
+          expirations: finalExps,
+          strikes: finalStrikes,
+          exchange: results.exchange,
+        });
+      };
+
+      const cleanup = () => {
+        this.ib.removeListener("securityDefinitionOptionParameter" as any, onParam);
+        this.ib.removeListener("securityDefinitionOptionParameterEnd" as any, onEnd);
+      };
+
+      this.ib.on("securityDefinitionOptionParameter" as any, onParam);
+      this.ib.on("securityDefinitionOptionParameterEnd" as any, onEnd);
 
       this.ib.reqSecDefOptParams(reqId, symbol, "", "STK", conId);
 
-      setTimeout(() => reject(new Error("Option chain params timeout")), 15_000);
+      setTimeout(() => {
+        cleanup();
+        reject(new Error("Option chain params timeout"));
+      }, 15_000);
     });
   }
 
@@ -1071,23 +1092,33 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
 
     if (!this.connected || requests.length === 0) return results;
 
+    log.info(`[ChainBatch] Starting batch of ${requests.length} requests (concurrency=${concurrency})`);
+
     // Set delayed-frozen once for the entire batch
     try { this.ib.reqMarketDataType(4); } catch {}
 
     // Process in chunks to respect IBKR concurrent data line limits
+    let successCount = 0;
+    let nullCount = 0;
     for (let i = 0; i < requests.length; i += concurrency) {
       const chunk = requests.slice(i, i + concurrency);
+      log.info(`[ChainBatch] Processing chunk ${Math.floor(i / concurrency) + 1}: ${chunk.length} requests`);
       const promises = chunk.map(async (req) => {
         const key = `${req.strike}-${req.right}`;
         try {
           const data = await this.getOptionNBBOInternal(req);
           results.set(key, data);
-        } catch {
+          if (data) { successCount++; } else { nullCount++; }
+        } catch (err) {
+          log.warn(`[ChainBatch] Error for ${key}: ${err}`);
           results.set(key, null);
+          nullCount++;
         }
       });
       await Promise.all(promises);
     }
+
+    log.info(`[ChainBatch] Done: ${successCount} with data, ${nullCount} null/failed out of ${requests.length} total`);
 
     // Restore real-time data type
     try { this.ib.reqMarketDataType(1); } catch {}
@@ -1189,7 +1220,8 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       this.ib.on(EventNameRef.error, onError);
 
       try {
-        this.ib.reqMktData(reqId, contract, "", false, false);
+        // Use snapshot=true for batch queries — avoids consuming IBKR streaming data lines
+        this.ib.reqMktData(reqId, contract, "", true, false);
       } catch {
         cleanup();
         resolve(null);

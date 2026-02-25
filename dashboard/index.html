@@ -3138,6 +3138,7 @@ function OptionChainTab({ positions }) {
     try {
       const res = await fetch(API + "/optionchain/" + symbol + "?expiration=" + selectedExp + "&range=" + strikeRange);
       const json = await res.json();
+      console.log("[OptionChain] API response:", JSON.stringify(json.data?.strikes?.length), "strikes, calls:", Object.keys(json.data?.calls || {}).length, "puts:", Object.keys(json.data?.puts || {}).length);
       if (json.success) {
         setChainData(json.data);
       } else {
