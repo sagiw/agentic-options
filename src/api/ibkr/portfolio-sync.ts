@@ -1039,6 +1039,188 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   }
 
   // ══════════════════════════════════════════════════════════
+  //  OPTION CHAIN BATCH — fetch NBBO for many options at once
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Fetch NBBO for a batch of options in parallel.
+   * Each option gets its own reqMktData stream with independent
+   * listeners, timeouts, and cleanup.  Market data type is set to
+   * DELAYED_FROZEN once before the batch and restored afterwards.
+   *
+   * @param requests Array of {symbol, strike, right, expiration}
+   * @param concurrency Max simultaneous IBKR reqMktData calls (default 50)
+   * @returns Map of "strike-right" → {bid,ask,mid,last,delayed} | null
+   */
+  async getOptionChainBatch(
+    requests: Array<{
+      symbol: string;
+      strike: number;
+      right: "C" | "P";
+      expiration: string;
+      exchange?: string;
+    }>,
+    concurrency = 50,
+  ): Promise<
+    Map<string, { bid: number; ask: number; mid: number; last: number; delayed?: boolean } | null>
+  > {
+    const results = new Map<
+      string,
+      { bid: number; ask: number; mid: number; last: number; delayed?: boolean } | null
+    >();
+
+    if (!this.connected || requests.length === 0) return results;
+
+    // Set delayed-frozen once for the entire batch
+    try { this.ib.reqMarketDataType(4); } catch {}
+
+    // Process in chunks to respect IBKR concurrent data line limits
+    for (let i = 0; i < requests.length; i += concurrency) {
+      const chunk = requests.slice(i, i + concurrency);
+      const promises = chunk.map(async (req) => {
+        const key = `${req.strike}-${req.right}`;
+        try {
+          const data = await this.getOptionNBBOInternal(req);
+          results.set(key, data);
+        } catch {
+          results.set(key, null);
+        }
+      });
+      await Promise.all(promises);
+    }
+
+    // Restore real-time data type
+    try { this.ib.reqMarketDataType(1); } catch {}
+
+    return results;
+  }
+
+  /**
+   * Internal NBBO fetch without changing the MarketDataType.
+   * Used by getOptionChainBatch so it only sets the type once.
+   */
+  private async getOptionNBBOInternal(params: {
+    symbol: string;
+    strike: number;
+    right: "C" | "P";
+    expiration: string;
+    exchange?: string;
+  }): Promise<{ bid: number; ask: number; mid: number; last: number; delayed?: boolean } | null> {
+    const reqId = this.nextReqId++;
+    const prices = { bid: 0, ask: 0, last: 0, close: 0, isDelayed: false };
+
+    const contract: any = {
+      symbol: params.symbol,
+      secType: "OPT",
+      exchange: params.exchange || "SMART",
+      currency: "USD",
+      strike: params.strike,
+      right: params.right,
+      lastTradeDateOrContractMonth: params.expiration,
+      multiplier: "100",
+    };
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const resolveWith = () => {
+        const refPrice = prices.last || prices.close || 0;
+        const bid = prices.bid || (refPrice > 0 ? refPrice * 0.95 : 0);
+        const ask = prices.ask || (refPrice > 0 ? refPrice * 1.05 : 0);
+        if (bid > 0 || ask > 0) {
+          const mid = Math.round(((bid + ask) / 2) * 100) / 100;
+          resolve({ bid, ask, mid, last: refPrice, delayed: prices.isDelayed });
+        } else {
+          resolve(null);
+        }
+      };
+
+      const onTick = (_reqId: number, tickType: number, price: number) => {
+        if (_reqId !== reqId || resolved) return;
+        if (price <= 0 || price === -1) return;
+        if (tickType === 1) prices.bid = price;
+        else if (tickType === 2) prices.ask = price;
+        else if (tickType === 4) prices.last = price;
+        else if (tickType === 9) prices.close = price;
+        else if (tickType === 66) { prices.bid = price; prices.isDelayed = true; }
+        else if (tickType === 67) { prices.ask = price; prices.isDelayed = true; }
+        else if (tickType === 68) { prices.last = price; prices.isDelayed = true; }
+        else if (tickType === 75) { prices.close = price; prices.isDelayed = true; }
+        else return;
+
+        if (prices.bid > 0 && prices.ask > 0) {
+          resolved = true;
+          cleanup();
+          resolveWith();
+        }
+      };
+
+      const onSnapshotEnd = (_reqId: number) => {
+        if (_reqId !== reqId || resolved) return;
+        resolved = true;
+        cleanup();
+        resolveWith();
+      };
+
+      const onError = (_reqId: number, errorCode: number, _errorMsg: string) => {
+        if (_reqId !== reqId || resolved) return;
+        if ([2104, 2106, 2119, 2158, 10167].includes(errorCode)) {
+          if (errorCode === 10167) prices.isDelayed = true;
+          return;
+        }
+        if ([200, 354, 10168, 162, 10187, 10090].includes(errorCode)) {
+          resolved = true;
+          cleanup();
+          resolve(null);
+        }
+      };
+
+      const cleanup = () => {
+        const EN = this.eventNameRef!;
+        this.ib.removeListener(EN.tickPrice, onTick);
+        this.ib.removeListener(EN.tickSnapshotEnd, onSnapshotEnd);
+        this.ib.removeListener(EN.error, onError);
+        try { this.ib.cancelMktData(reqId); } catch {}
+      };
+
+      const EventNameRef = this.eventNameRef!;
+      this.ib.on(EventNameRef.tickPrice, onTick);
+      this.ib.on(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+      this.ib.on(EventNameRef.error, onError);
+
+      try {
+        this.ib.reqMktData(reqId, contract, "", false, false);
+      } catch {
+        cleanup();
+        resolve(null);
+        return;
+      }
+
+      // Settle after 3s with partial data
+      setTimeout(() => {
+        if (!resolved && (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0)) {
+          resolved = true;
+          cleanup();
+          resolveWith();
+        }
+      }, 3_000);
+
+      // Hard timeout 8s
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
+            resolveWith();
+          } else {
+            resolve(null);
+          }
+        }
+      }, 8_000);
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════
   //  CONTRACT ID RESOLUTION (for combo orders)
   // ══════════════════════════════════════════════════════════
 

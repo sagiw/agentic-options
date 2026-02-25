@@ -817,7 +817,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback } = React;
+const { useState, useEffect, useCallback, useMemo } = React;
 const RC = window.Recharts || {};
 const { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } = RC;
 
@@ -3070,6 +3070,312 @@ function ErrorDetailPanel({ orders }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  OPTION CHAIN TAB
+// ═══════════════════════════════════════════════════════════
+
+function OptionChainTab({ positions }) {
+  const [symbol, setSymbol] = useState("");
+  const [expirations, setExpirations] = useState([]);
+  const [selectedExp, setSelectedExp] = useState("");
+  const [chainData, setChainData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [strikeRange, setStrikeRange] = useState(10);
+
+  // Get unique symbols from portfolio for quick selection
+  const portfolioSymbols = useMemo(() => {
+    const syms = new Set();
+    (positions || []).forEach(p => {
+      const u = p.contract.underlying || p.contract.symbol;
+      if (u) syms.add(u);
+    });
+    return Array.from(syms).sort();
+  }, [positions]);
+
+  // Get user's existing option positions for highlighting
+  const userPositions = useMemo(() => {
+    const map = new Map(); // "strike-right" → position
+    (positions || []).forEach(p => {
+      if (p.contract.type === "call" || p.contract.type === "put") {
+        const u = p.contract.underlying || p.contract.symbol;
+        if (u === symbol) {
+          const right = p.contract.type === "call" ? "C" : "P";
+          map.set(`${p.contract.strike}-${right}`, p);
+        }
+      }
+    });
+    return map;
+  }, [positions, symbol]);
+
+  // Fetch expirations when symbol changes
+  const loadExpirations = async (sym) => {
+    if (!sym) return;
+    setError("");
+    setExpirations([]);
+    setSelectedExp("");
+    setChainData(null);
+    try {
+      const res = await fetch(API + "/optionchain/" + sym + "?expiration=list");
+      const json = await res.json();
+      if (json.success && json.data.expirations?.length) {
+        setExpirations(json.data.expirations);
+        // Auto-select first expiration
+        setSelectedExp(json.data.expirations[0]);
+      } else {
+        setError("No options available for " + sym);
+      }
+    } catch (e) {
+      setError("Failed to load expirations: " + e.message);
+    }
+  };
+
+  // Fetch chain data for selected expiration
+  const loadChain = async () => {
+    if (!symbol || !selectedExp) return;
+    setLoading(true);
+    setError("");
+    setChainData(null);
+    try {
+      const res = await fetch(API + "/optionchain/" + symbol + "?expiration=" + selectedExp + "&range=" + strikeRange);
+      const json = await res.json();
+      if (json.success) {
+        setChainData(json.data);
+      } else {
+        setError(json.error || "Failed to load chain");
+      }
+    } catch (e) {
+      setError("Failed to load chain: " + e.message);
+    }
+    setLoading(false);
+  };
+
+  // Auto-load chain when expiration changes
+  useEffect(() => {
+    if (symbol && selectedExp) loadChain();
+  }, [selectedExp, strikeRange]);
+
+  const fmtPrice = (v) => v != null ? "$" + v.toFixed(2) : "—";
+
+  return (
+    <div className="card">
+      <div className="card-title">Option Chain — Live IBKR Prices</div>
+
+      {/* ── Controls ── */}
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+        {/* Symbol selector */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>Symbol:</label>
+          <select
+            value={symbol}
+            onChange={e => { setSymbol(e.target.value); loadExpirations(e.target.value); }}
+            style={{
+              background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--border)",
+              borderRadius: 6, padding: "6px 10px", fontSize: 13, minWidth: 100,
+            }}
+          >
+            <option value="">Select...</option>
+            {portfolioSymbols.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <input
+            type="text" placeholder="or type..."
+            style={{
+              background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--border)",
+              borderRadius: 6, padding: "6px 10px", fontSize: 13, width: 90, textTransform: "uppercase",
+            }}
+            onKeyDown={e => {
+              if (e.key === "Enter") {
+                const val = e.target.value.trim().toUpperCase();
+                if (val) { setSymbol(val); loadExpirations(val); }
+              }
+            }}
+          />
+        </div>
+
+        {/* Expiration selector */}
+        {expirations.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <label style={{ fontSize: 12, color: "var(--text-muted)" }}>Expiration:</label>
+            <select
+              value={selectedExp}
+              onChange={e => setSelectedExp(e.target.value)}
+              style={{
+                background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--border)",
+                borderRadius: 6, padding: "6px 10px", fontSize: 13,
+              }}
+            >
+              {expirations.map(exp => {
+                const d = parseExpDate(exp);
+                const label = d ? d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "2-digit" }) : exp;
+                const dte = d ? Math.ceil((d.getTime() - Date.now()) / 86400000) : "";
+                return <option key={exp} value={exp}>{label} ({exp}) — {dte}d</option>;
+              })}
+            </select>
+          </div>
+        )}
+
+        {/* Strike range */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <label style={{ fontSize: 12, color: "var(--text-muted)" }}>Strikes ±:</label>
+          <select
+            value={strikeRange}
+            onChange={e => setStrikeRange(parseInt(e.target.value))}
+            style={{
+              background: "var(--bg-card)", color: "var(--text-primary)", border: "1px solid var(--border)",
+              borderRadius: 6, padding: "6px 10px", fontSize: 13,
+            }}
+          >
+            {[5, 10, 15, 20, 25].map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+
+        {/* Refresh button */}
+        <button
+          onClick={loadChain}
+          disabled={loading || !symbol || !selectedExp}
+          style={{
+            background: loading ? "var(--border)" : "var(--accent-blue)",
+            color: "#fff", border: "none", borderRadius: 6, padding: "6px 16px", fontSize: 13,
+            cursor: loading ? "wait" : "pointer", fontWeight: 600,
+          }}
+        >
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+      </div>
+
+      {/* ── Error ── */}
+      {error && (
+        <div style={{ color: "var(--accent-red)", fontSize: 13, marginBottom: 12, padding: "8px 12px",
+          background: "rgba(239,68,68,0.1)", borderRadius: 6 }}>
+          {error}
+        </div>
+      )}
+
+      {/* ── Loading indicator ── */}
+      {loading && (
+        <div style={{ textAlign: "center", padding: "40px 0", color: "var(--text-muted)" }}>
+          <div style={{ fontSize: 24, marginBottom: 8 }}>⏳</div>
+          <div>Fetching live prices from IBKR... (~10 seconds)</div>
+          <div style={{ fontSize: 11, marginTop: 4, color: "var(--text-muted)" }}>
+            Requesting {strikeRange * 2 + 1} strikes × 2 (calls + puts) = {(strikeRange * 2 + 1) * 2} market data streams
+          </div>
+        </div>
+      )}
+
+      {/* ── Chain Table ── */}
+      {chainData && !loading && (
+        <div>
+          <div style={{ marginBottom: 10, fontSize: 12, color: "var(--text-muted)" }}>
+            {chainData.symbol} — Underlying: <b style={{ color: "var(--text-primary)" }}>{fmtPrice(chainData.underlyingPrice)}</b>
+            {" | "}{chainData.strikes?.length || 0} strikes
+            {" | "}Data: {Object.values(chainData.calls).filter(Boolean).length + Object.values(chainData.puts).filter(Boolean).length} options with prices
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="positions-table" style={{ width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th colSpan={4} style={{ textAlign: "center", color: "var(--accent-green)", borderBottom: "2px solid var(--accent-green)", paddingBottom: 6 }}>
+                    CALLS
+                  </th>
+                  <th style={{ textAlign: "center", borderBottom: "2px solid var(--accent-blue)", paddingBottom: 6, color: "var(--accent-blue)" }}>
+                    STRIKE
+                  </th>
+                  <th colSpan={4} style={{ textAlign: "center", color: "var(--accent-red)", borderBottom: "2px solid var(--accent-red)", paddingBottom: 6 }}>
+                    PUTS
+                  </th>
+                </tr>
+                <tr>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>BID</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>ASK</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>MID</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>LAST</th>
+                  <th style={{ textAlign: "center", fontSize: 10, color: "var(--text-muted)" }}></th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>BID</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>ASK</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>MID</th>
+                  <th style={{ textAlign: "right", fontSize: 10, color: "var(--text-muted)" }}>LAST</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(chainData.strikes || []).map(strike => {
+                  const c = chainData.calls[strike];
+                  const p = chainData.puts[strike];
+                  const isATM = chainData.underlyingPrice &&
+                    Math.abs(strike - chainData.underlyingPrice) ===
+                    Math.min(...chainData.strikes.map(s => Math.abs(s - chainData.underlyingPrice)));
+                  const hasCallPos = userPositions.has(`${strike}-C`);
+                  const hasPutPos = userPositions.has(`${strike}-P`);
+
+                  const rowBg = isATM ? "rgba(59,130,246,0.12)" : "transparent";
+                  const callBg = hasCallPos ? "rgba(16,185,129,0.15)" : "transparent";
+                  const putBg = hasPutPos ? "rgba(239,68,68,0.15)" : "transparent";
+                  const noDataStyle = { color: "var(--text-muted)", opacity: 0.4 };
+
+                  return (
+                    <tr key={strike} style={{ background: rowBg }}>
+                      {/* Calls */}
+                      <td style={{ textAlign: "right", background: callBg, ...(c ? {} : noDataStyle) }}>
+                        {c ? fmtPrice(c.bid) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: callBg, fontWeight: 600, ...(c ? {} : noDataStyle) }}>
+                        {c ? fmtPrice(c.ask) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: callBg, ...(c ? {} : noDataStyle) }}>
+                        {c ? fmtPrice(c.mid) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: callBg, color: "var(--text-muted)", ...(c ? {} : noDataStyle) }}>
+                        {c ? fmtPrice(c.last) : "—"}
+                      </td>
+                      {/* Strike */}
+                      <td style={{
+                        textAlign: "center", fontWeight: 700,
+                        color: isATM ? "var(--accent-blue)" : "var(--text-primary)",
+                        borderLeft: "1px solid var(--border)", borderRight: "1px solid var(--border)",
+                        position: "relative",
+                      }}>
+                        ${strike}
+                        {hasCallPos && <span style={{ position: "absolute", left: 4, color: "var(--accent-green)", fontSize: 10 }} title="You own this call">●</span>}
+                        {hasPutPos && <span style={{ position: "absolute", right: 4, color: "var(--accent-red)", fontSize: 10 }} title="You own this put">●</span>}
+                        {isATM && <div style={{ fontSize: 8, color: "var(--accent-blue)", fontWeight: 400 }}>ATM</div>}
+                      </td>
+                      {/* Puts */}
+                      <td style={{ textAlign: "right", background: putBg, ...(p ? {} : noDataStyle) }}>
+                        {p ? fmtPrice(p.bid) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: putBg, fontWeight: 600, ...(p ? {} : noDataStyle) }}>
+                        {p ? fmtPrice(p.ask) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: putBg, ...(p ? {} : noDataStyle) }}>
+                        {p ? fmtPrice(p.mid) : "—"}
+                      </td>
+                      <td style={{ textAlign: "right", background: putBg, color: "var(--text-muted)", ...(p ? {} : noDataStyle) }}>
+                        {p ? fmtPrice(p.last) : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 8, display: "flex", gap: 16 }}>
+            <span>🟢 = you own this call</span>
+            <span>🔴 = you own this put</span>
+            <span style={{ color: "var(--accent-blue)" }}>■ ATM row highlighted</span>
+            <span>Prices are {Object.values(chainData.calls).find(v => v?.delayed) ? "delayed" : "real-time"} from IBKR</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Empty state ── */}
+      {!chainData && !loading && !error && (
+        <div style={{ textAlign: "center", padding: "40px 0", color: "var(--text-muted)" }}>
+          Select a symbol and expiration to view the option chain
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 //  ORDERS TAB
 // ═══════════════════════════════════════════════════════════
 
@@ -3558,11 +3864,12 @@ function App() {
 
       {/* Tabs */}
       <div className="tabs">
-        {["portfolio", "analysis", "orders", "risk"].map((tab) => (
+        {["portfolio", "analysis", "chain", "orders", "risk"].map((tab) => (
           <button key={tab} className={`tab ${activeTab === tab ? "active" : ""}`}
             onClick={() => setActiveTab(tab)}>
             {tab === "portfolio" ? "Portfolio"
               : tab === "analysis" ? "Strategy Analysis"
+              : tab === "chain" ? "Option Chain"
               : tab === "orders" ? <>Orders
                   {orders.length > 0 && (
                     <span className={`tab-badge ${activeTab === "orders" ? "tab-badge-active" : "tab-badge-idle"}`}>
@@ -4147,6 +4454,11 @@ function App() {
             </div>
           )}
         </div>
+      )}
+
+      {/* ── Option Chain Tab ─────────────────────────── */}
+      {activeTab === "chain" && (
+        <OptionChainTab positions={positions} />
       )}
 
       {/* ── Orders Tab ─────────────────────────────── */}

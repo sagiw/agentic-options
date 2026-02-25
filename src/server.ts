@@ -294,6 +294,139 @@ app.get("/api/chain/:symbol", async (req, res) => {
 });
 
 /**
+ * GET /api/optionchain/:symbol — Full option chain with live IBKR prices
+ *
+ * Query params:
+ *   expiration  — YYYYMMDD (required, or "list" to get available expirations)
+ *   range       — number of strikes above/below ATM (default 10)
+ *
+ * Returns:
+ *   expirations[] — all available expirations
+ *   strikes[]     — the filtered strikes
+ *   calls{}       — { [strike]: { bid, ask, mid, last, delayed } | null }
+ *   puts{}        — { [strike]: { bid, ask, mid, last, delayed } | null }
+ */
+const optionChainCache: Record<string, { data: any; cachedAt: number }> = {};
+const CHAIN_CACHE_TTL = 60_000; // 60s
+
+app.get("/api/optionchain/:symbol", async (req, res) => {
+  try {
+    const symbol = req.params.symbol.toUpperCase();
+    const expirationParam = (req.query.expiration as string) || "list";
+    const range = Math.min(parseInt(req.query.range as string) || 10, 25);
+
+    // Step 1: Get chain params (strikes + expirations) from IBKR
+    let chainParams: { expirations: string[]; strikes: number[]; exchange: string };
+    try {
+      chainParams = await ibkr.getOptionChainParams(symbol);
+    } catch (err) {
+      return res.status(500).json({
+        success: false,
+        error: `Failed to get option chain for ${symbol}: ${err}`,
+      });
+    }
+
+    if (!chainParams.expirations.length || !chainParams.strikes.length) {
+      return res.json({
+        success: true,
+        data: {
+          symbol,
+          expirations: [],
+          strikes: [],
+          calls: {},
+          puts: {},
+          underlyingPrice: 0,
+          message: `No options available for ${symbol}`,
+        },
+      });
+    }
+
+    // If only listing expirations, return early
+    if (expirationParam === "list") {
+      return res.json({
+        success: true,
+        data: {
+          symbol,
+          expirations: chainParams.expirations,
+          strikes: chainParams.strikes,
+        },
+      });
+    }
+
+    // Step 2: Get underlying price for ATM filtering
+    const portfolio = await refreshPortfolio();
+    let underlyingPrice = 0;
+    for (const pos of portfolio.positions) {
+      if (pos.contract.symbol === symbol && pos.contract.type === "stock" && pos.quantity > 0 && pos.marketValue > 0) {
+        underlyingPrice = pos.marketValue / pos.quantity;
+        break;
+      }
+    }
+    if (underlyingPrice <= 0) {
+      const snapshot = await getMarketSnapshot(symbol);
+      if (snapshot && snapshot.price > 0) underlyingPrice = snapshot.price;
+    }
+    if (underlyingPrice <= 0) underlyingPrice = chainParams.strikes[Math.floor(chainParams.strikes.length / 2)];
+
+    // Step 3: Filter strikes around ATM
+    const allStrikes = chainParams.strikes;
+    const atmIdx = allStrikes.reduce((best, s, i) =>
+      Math.abs(s - underlyingPrice) < Math.abs(allStrikes[best] - underlyingPrice) ? i : best, 0);
+    const fromIdx = Math.max(0, atmIdx - range);
+    const toIdx = Math.min(allStrikes.length - 1, atmIdx + range);
+    const strikes = allStrikes.slice(fromIdx, toIdx + 1);
+
+    // Step 4: Check cache
+    const cacheKey = `${symbol}-${expirationParam}-${fromIdx}-${toIdx}`;
+    const cached = optionChainCache[cacheKey];
+    if (cached && Date.now() - cached.cachedAt < CHAIN_CACHE_TTL) {
+      return res.json({ success: true, data: cached.data });
+    }
+
+    // Step 5: Build batch requests — calls + puts for each strike
+    const requests: Array<{ symbol: string; strike: number; right: "C" | "P"; expiration: string }> = [];
+    for (const strike of strikes) {
+      requests.push({ symbol, strike, right: "C", expiration: expirationParam });
+      requests.push({ symbol, strike, right: "P", expiration: expirationParam });
+    }
+
+    log.info(`Option chain ${symbol} exp ${expirationParam}: fetching ${requests.length} options (${strikes.length} strikes)...`);
+
+    // Step 6: Fetch all prices in parallel
+    const batchResults = await ibkr.getOptionChainBatch(requests, 50);
+
+    // Step 7: Organize results
+    const calls: Record<number, any> = {};
+    const puts: Record<number, any> = {};
+    for (const strike of strikes) {
+      calls[strike] = batchResults.get(`${strike}-C`) || null;
+      puts[strike] = batchResults.get(`${strike}-P`) || null;
+    }
+
+    const data = {
+      symbol,
+      underlyingPrice,
+      expiration: expirationParam,
+      expirations: chainParams.expirations,
+      strikes,
+      calls,
+      puts,
+    };
+
+    // Cache result
+    optionChainCache[cacheKey] = { data, cachedAt: Date.now() };
+
+    log.info(`Option chain ${symbol}: returned ${strikes.length} strikes, ` +
+      `${Object.values(calls).filter(Boolean).length} calls, ${Object.values(puts).filter(Boolean).length} puts with data`);
+
+    res.json({ success: true, data });
+  } catch (err) {
+    log.error(`Option chain failed`, { error: String(err) });
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
  * GET /api/var — Portfolio Value at Risk
  */
 app.get("/api/var", async (_req, res) => {
