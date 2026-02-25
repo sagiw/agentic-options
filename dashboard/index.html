@@ -819,7 +819,7 @@
 <script type="text/babel">
 const { useState, useEffect, useCallback, useMemo } = React;
 const RC = window.Recharts || {};
-const { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine } = RC;
+const { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot } = RC;
 
 const API = window.location.origin + "/api";
 
@@ -1160,13 +1160,6 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           />
           {/* Zero line */}
           <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
-          {/* Current price marker — shows actual P&L (matching text above) */}
-          {currentPrice > 0 && (
-            <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={2}
-              strokeDasharray="6 3"
-              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+$" : "-$"}${Math.abs(currentPnL).toFixed(2)} | Exp: ${expirationPnL >= 0 ? "+$" : "-$"}${Math.abs(expirationPnL).toFixed(0)}`,
-                position: "top", fill: "#f59e0b", fontSize: 10, fontWeight: 600 }} />
-          )}
           {/* Breakeven markers */}
           {breakevens.map((be, i) => (
             <ReferenceLine key={i} x={be} stroke="#f59e0b" strokeDasharray="3 3" strokeOpacity={0.5} />
@@ -1178,6 +1171,17 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           {/* P&L area */}
           <Area type="monotone" dataKey="pnl" stroke="#3b82f6" strokeWidth={2}
             fill={"url(#" + gradId + ")"} />
+          {/* Current price marker — rendered AFTER Area so it's on top */}
+          {currentPrice > 0 && (
+            <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={3}
+              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+$" : "-$"}${Math.abs(currentPnL).toFixed(2)} | Exp: ${expirationPnL >= 0 ? "+$" : "-$"}${Math.abs(expirationPnL).toFixed(0)}`,
+                position: "top", fill: "#f59e0b", fontSize: 11, fontWeight: 700 }} />
+          )}
+          {/* Dot on the curve at current price */}
+          {currentPrice > 0 && (() => {
+            const nearest = points.reduce((best, p) => Math.abs(p.price - currentPrice) < Math.abs(best.price - currentPrice) ? p : best, points[0]);
+            return <ReferenceDot x={nearest.price} y={nearest.pnl} r={6} fill="#f59e0b" stroke="#fff" strokeWidth={2} />;
+          })()}
         </AreaChart>
       </ResponsiveContainer>
     </div>
