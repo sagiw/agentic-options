@@ -1036,7 +1036,7 @@ function GreeksDisplay({ greeks }) {
 //  STRATEGY PAYOFF CHART (inline in position cards)
 // ═══════════════════════════════════════════════════════════
 
-function StrategyPayoffChart({ legs, underlying, allPositions }) {
+function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
   // Compute entry prices from position data
   const chartLegs = legs.map(l => {
     const mult = l.contract.multiplier || 100;
@@ -1093,17 +1093,21 @@ function StrategyPayoffChart({ legs, underlying, allPositions }) {
     if (pnl < maxLoss) maxLoss = pnl;
   }
 
-  // Compute P&L at current price for the marker
-  let currentPnL = 0;
+  // Use actual unrealized P&L from position data (matches the text above)
+  // actualPnL comes from strat.legs.reduce(unrealizedPnL) — the real market P&L
+  const currentPnL = actualPnL != null ? Math.round(actualPnL) : 0;
+
+  // Also compute expiration P&L at current price (for tooltip context)
+  let expirationPnL = 0;
   if (currentPrice > 0) {
     for (const leg of chartLegs) {
       const dir = leg.side === "buy" ? 1 : -1;
       const intrinsic = leg.type === "call"
         ? Math.max(currentPrice - leg.strike, 0)
         : Math.max(leg.strike - currentPrice, 0);
-      currentPnL += (intrinsic - leg.price) * dir * leg.quantity * 100;
+      expirationPnL += (intrinsic - leg.price) * dir * leg.quantity * 100;
     }
-    currentPnL = Math.round(currentPnL);
+    expirationPnL = Math.round(expirationPnL);
   }
 
   // Breakeven points
@@ -1125,7 +1129,8 @@ function StrategyPayoffChart({ legs, underlying, allPositions }) {
         <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
           Payoff at Expiration
         </div>
-        <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)" }}>
+        <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{currentPnL >= 0 ? "+" : ""}{fmt.usd(currentPnL)}</b></span>
           <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{maxProfit >= 0 ? "+" : ""}{fmt.usd(maxProfit)}</b></span>
           <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.usd(maxLoss)}</b></span>
           {breakevens.map((be, i) => (
@@ -1155,11 +1160,11 @@ function StrategyPayoffChart({ legs, underlying, allPositions }) {
           />
           {/* Zero line */}
           <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
-          {/* Current price marker */}
+          {/* Current price marker — shows actual P&L (matching text above) */}
           {currentPrice > 0 && (
             <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={2}
               strokeDasharray="6 3"
-              label={{ value: `📍 $${currentPrice.toFixed(2)} (${currentPnL >= 0 ? "+" : ""}$${currentPnL})`,
+              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+" : ""}$${currentPnL} | Exp: ${expirationPnL >= 0 ? "+" : ""}$${expirationPnL}`,
                 position: "top", fill: "#f59e0b", fontSize: 10, fontWeight: 600 }} />
           )}
           {/* Breakeven markers */}
@@ -1577,7 +1582,7 @@ function PositionsTable({ positions }) {
                       </div>
 
                       {/* Payoff diagram */}
-                      <StrategyPayoffChart legs={strat.legs} underlying={strat.underlying} allPositions={positions} />
+                      <StrategyPayoffChart legs={strat.legs} underlying={strat.underlying} allPositions={positions} actualPnL={totalPnL} />
 
                       {/* Per-leg breakdown table */}
                       <table className="strategy-close-legs-table">
