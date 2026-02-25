@@ -308,6 +308,31 @@ export class QuantAnalyst implements Agent {
   }
 
   /**
+   * Get the next N monthly option expirations (3rd Friday of each month).
+   * These match real IBKR monthly expiration dates.
+   */
+  private getNextMonthlyExpirations(count: number): Date[] {
+    const results: Date[] = [];
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+    for (let m = 0; results.length < count && m < 12; m++) {
+      const year = now.getFullYear() + Math.floor((now.getMonth() + m) / 12);
+      const month = (now.getMonth() + m) % 12;
+      // Find the 3rd Friday of this month
+      const firstDay = new Date(year, month, 1);
+      const firstFriday = ((5 - firstDay.getDay() + 7) % 7) + 1;
+      const thirdFriday = new Date(year, month, firstFriday + 14);
+      // Must be at least 14 days out (skip near-term expirations)
+      const daysOut = Math.ceil((thirdFriday.getTime() - today.getTime()) / 86400000);
+      if (daysOut >= 14) {
+        results.push(thirdFriday);
+      }
+    }
+    return results;
+  }
+
+  /**
    * Generate a synthetic option chain calibrated to real market data.
    *
    * Strike spacing adapts to the stock price:
@@ -324,11 +349,9 @@ export class QuantAnalyst implements Agent {
     baseIV: number = 0.3
   ): OptionChainEntry[] {
     const entries: OptionChainEntry[] = [];
-    const expirations = [21, 45, 75].map((days) => {
-      const d = new Date();
-      d.setDate(d.getDate() + days);
-      return d;
-    });
+    // Use real monthly expirations (3rd Friday of each month)
+    // instead of arbitrary "today + N days" which creates wrong dates
+    const expirations = this.getNextMonthlyExpirations(3);
 
     // Adaptive strike spacing based on stock price
     let strikeStep: number;

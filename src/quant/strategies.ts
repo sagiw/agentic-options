@@ -100,8 +100,9 @@ export function buildBullCallSpread(
   );
   if (!shortLeg) return null;
 
-  const buyPrice = roundToTickSize(atm.mid, underlying);
-  const sellPrice = roundToTickSize(shortLeg.mid, underlying);
+  // Use ask for buying, bid for selling — matches real execution cost
+  const buyPrice = roundToTickSize(atm.ask > 0 ? atm.ask : atm.mid, underlying);
+  const sellPrice = roundToTickSize(shortLeg.bid > 0 ? shortLeg.bid : shortLeg.mid, underlying);
   const netDebit = buyPrice - sellPrice;
   const width = shortLeg.contract.strike - atm.contract.strike;
 
@@ -155,8 +156,9 @@ export function buildBearPutSpread(
     .pop();
   if (!shortLeg) return null;
 
-  const buyPrice = roundToTickSize(atm.mid, underlying);
-  const sellPrice = roundToTickSize(shortLeg.mid, underlying);
+  // Use ask for buying, bid for selling — matches real execution cost
+  const buyPrice = roundToTickSize(atm.ask > 0 ? atm.ask : atm.mid, underlying);
+  const sellPrice = roundToTickSize(shortLeg.bid > 0 ? shortLeg.bid : shortLeg.mid, underlying);
   const netDebit = buyPrice - sellPrice;
   const width = atm.contract.strike - shortLeg.contract.strike;
 
@@ -207,10 +209,11 @@ export function buildIronCondor(
 
   if (!shortCall || !longCall || !shortPut || !longPut) return null;
 
-  const lpPrice = roundToTickSize(longPut.mid, underlying);
-  const spPrice = roundToTickSize(shortPut.mid, underlying);
-  const scPrice = roundToTickSize(shortCall.mid, underlying);
-  const lcPrice = roundToTickSize(longCall.mid, underlying);
+  // Use ask for buying, bid for selling — matches real execution cost
+  const lpPrice = roundToTickSize(longPut.ask > 0 ? longPut.ask : longPut.mid, underlying);
+  const spPrice = roundToTickSize(shortPut.bid > 0 ? shortPut.bid : shortPut.mid, underlying);
+  const scPrice = roundToTickSize(shortCall.bid > 0 ? shortCall.bid : shortCall.mid, underlying);
+  const lcPrice = roundToTickSize(longCall.ask > 0 ? longCall.ask : longCall.mid, underlying);
   const netCredit = (scPrice - lcPrice) + (spPrice - lpPrice);
 
   return {
@@ -266,7 +269,8 @@ export function buildCashSecuredPut(
 
   // Sell the first OTM put (closest to ATM)
   const shortPut = puts[0];
-  const premium = roundToTickSize(shortPut.mid, underlying);
+  // Use bid for selling — matches real execution price
+  const premium = roundToTickSize(shortPut.bid > 0 ? shortPut.bid : shortPut.mid, underlying);
 
   return {
     name: `Cash-Secured Put ${underlying} ${shortPut.contract.strike}`,
