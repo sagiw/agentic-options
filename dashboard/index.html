@@ -1032,6 +1032,153 @@ function GreeksDisplay({ greeks }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════
+//  STRATEGY PAYOFF CHART (inline in position cards)
+// ═══════════════════════════════════════════════════════════
+
+function StrategyPayoffChart({ legs, underlying, allPositions }) {
+  // Compute entry prices from position data
+  const chartLegs = legs.map(l => {
+    const mult = l.contract.multiplier || 100;
+    const entryPerShare = l.averageCost ? Math.abs(l.averageCost) / mult : 0;
+    return {
+      strike: l.contract.strike,
+      type: l.contract.type, // "call" or "put"
+      side: l.quantity > 0 ? "buy" : "sell",
+      quantity: Math.abs(l.quantity),
+      price: entryPerShare,
+    };
+  });
+
+  // Get current underlying price from stock positions or estimate from option strikes
+  let currentPrice = 0;
+  if (allPositions) {
+    const stock = allPositions.find(p =>
+      (p.contract.symbol === underlying || p.contract.underlying === underlying) &&
+      p.contract.type === "stock" && p.quantity > 0 && p.marketValue > 0
+    );
+    if (stock) currentPrice = stock.marketValue / stock.quantity;
+  }
+  if (currentPrice <= 0) {
+    // Estimate from strike midpoint
+    const strikes = chartLegs.map(l => l.strike).filter(Boolean);
+    if (strikes.length) currentPrice = (Math.min(...strikes) + Math.max(...strikes)) / 2;
+  }
+
+  // Generate payoff curve
+  const strikes = chartLegs.map(l => l.strike).filter(Boolean);
+  if (strikes.length === 0) return null;
+  const minStrike = Math.min(...strikes);
+  const maxStrike = Math.max(...strikes);
+  const spread = Math.max(maxStrike - minStrike, 10);
+  const center = (minStrike + maxStrike) / 2;
+  const lo = center - spread * 2;
+  const hi = center + spread * 2;
+  const step = (hi - lo) / 60;
+
+  const points = [];
+  let maxProfit = -Infinity, maxLoss = Infinity;
+  for (let price = lo; price <= hi; price += step) {
+    let pnl = 0;
+    for (const leg of chartLegs) {
+      const dir = leg.side === "buy" ? 1 : -1;
+      const intrinsic = leg.type === "call"
+        ? Math.max(price - leg.strike, 0)
+        : Math.max(leg.strike - price, 0);
+      pnl += (intrinsic - leg.price) * dir * leg.quantity * 100;
+    }
+    pnl = Math.round(pnl);
+    points.push({ price: Math.round(price * 100) / 100, pnl });
+    if (pnl > maxProfit) maxProfit = pnl;
+    if (pnl < maxLoss) maxLoss = pnl;
+  }
+
+  // Compute P&L at current price for the marker
+  let currentPnL = 0;
+  if (currentPrice > 0) {
+    for (const leg of chartLegs) {
+      const dir = leg.side === "buy" ? 1 : -1;
+      const intrinsic = leg.type === "call"
+        ? Math.max(currentPrice - leg.strike, 0)
+        : Math.max(leg.strike - currentPrice, 0);
+      currentPnL += (intrinsic - leg.price) * dir * leg.quantity * 100;
+    }
+    currentPnL = Math.round(currentPnL);
+  }
+
+  // Breakeven points
+  const breakevens = [];
+  for (let i = 1; i < points.length; i++) {
+    if ((points[i - 1].pnl < 0 && points[i].pnl >= 0) || (points[i - 1].pnl >= 0 && points[i].pnl < 0)) {
+      // Linear interpolation
+      const ratio = Math.abs(points[i - 1].pnl) / (Math.abs(points[i - 1].pnl) + Math.abs(points[i].pnl));
+      breakevens.push(Math.round((points[i - 1].price + ratio * (points[i].price - points[i - 1].price)) * 100) / 100);
+    }
+  }
+
+  // Unique gradient ID to avoid conflicts across multiple charts
+  const gradId = useMemo(() => "stratGrad_" + Math.random().toString(36).slice(2, 8), []);
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)" }}>
+          Payoff at Expiration
+        </div>
+        <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)" }}>
+          <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{maxProfit >= 0 ? "+" : ""}{fmt.usd(maxProfit)}</b></span>
+          <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.usd(maxLoss)}</b></span>
+          {breakevens.map((be, i) => (
+            <span key={i}>BE: <b style={{ color: "var(--accent-amber)" }}>${be}</b></span>
+          ))}
+        </div>
+      </div>
+      <ResponsiveContainer width="100%" height={180}>
+        <AreaChart data={points} margin={{ top: 5, right: 10, left: 10, bottom: 0 }}>
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity={0.25} />
+              <stop offset="50%" stopColor="#10b981" stopOpacity={0.02} />
+              <stop offset="50%" stopColor="#ef4444" stopOpacity={0.02} />
+              <stop offset="100%" stopColor="#ef4444" stopOpacity={0.25} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="rgba(100,116,139,0.15)" />
+          <XAxis dataKey="price" tick={{ fill: "#64748b", fontSize: 9 }} tickFormatter={v => "$" + v}
+            domain={[lo, hi]} type="number" />
+          <YAxis tick={{ fill: "#64748b", fontSize: 9 }}
+            tickFormatter={v => v >= 0 ? "$" + v : "-$" + Math.abs(v)} />
+          <Tooltip
+            contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 11 }}
+            labelFormatter={v => "Price: $" + v}
+            formatter={v => [v >= 0 ? "+$" + v : "-$" + Math.abs(v), "P&L"]}
+          />
+          {/* Zero line */}
+          <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
+          {/* Current price marker */}
+          {currentPrice > 0 && (
+            <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={2}
+              strokeDasharray="6 3"
+              label={{ value: `📍 $${currentPrice.toFixed(2)} (${currentPnL >= 0 ? "+" : ""}$${currentPnL})`,
+                position: "top", fill: "#f59e0b", fontSize: 10, fontWeight: 600 }} />
+          )}
+          {/* Breakeven markers */}
+          {breakevens.map((be, i) => (
+            <ReferenceLine key={i} x={be} stroke="#f59e0b" strokeDasharray="3 3" strokeOpacity={0.5} />
+          ))}
+          {/* Strike markers */}
+          {strikes.map((s, i) => (
+            <ReferenceLine key={"s" + i} x={s} stroke="rgba(139,92,246,0.3)" strokeDasharray="2 4" />
+          ))}
+          {/* P&L area */}
+          <Area type="monotone" dataKey="pnl" stroke="#3b82f6" strokeWidth={2}
+            fill={"url(#" + gradId + ")"} />
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 function PositionsTable({ positions }) {
   const [expandedPos, setExpandedPos] = useState(null);
   const [showCloseManual, setShowCloseManual] = useState(null);
@@ -1428,6 +1575,9 @@ function PositionsTable({ positions }) {
                           <div className="strategy-close-summary-label">Days to Exp</div>
                         </div>
                       </div>
+
+                      {/* Payoff diagram */}
+                      <StrategyPayoffChart legs={strat.legs} underlying={strat.underlying} allPositions={positions} />
 
                       {/* Per-leg breakdown table */}
                       <table className="strategy-close-legs-table">
