@@ -1130,9 +1130,9 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           Payoff at Expiration
         </div>
         <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", flexWrap: "wrap" }}>
-          <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{currentPnL >= 0 ? "+" : ""}{fmt.usd(currentPnL)}</b></span>
-          <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{maxProfit >= 0 ? "+" : ""}{fmt.usd(maxProfit)}</b></span>
-          <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.usd(maxLoss)}</b></span>
+          <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{fmt.sign(currentPnL)}</b></span>
+          <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{fmt.sign(maxProfit)}</b></span>
+          <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.sign(maxLoss)}</b></span>
           {breakevens.map((be, i) => (
             <span key={i}>BE: <b style={{ color: "var(--accent-amber)" }}>${be}</b></span>
           ))}
@@ -1164,7 +1164,7 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           {currentPrice > 0 && (
             <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={2}
               strokeDasharray="6 3"
-              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+" : ""}$${currentPnL} | Exp: ${expirationPnL >= 0 ? "+" : ""}$${expirationPnL}`,
+              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+$" : "-$"}${Math.abs(currentPnL).toFixed(0)} | Exp: ${expirationPnL >= 0 ? "+$" : "-$"}${Math.abs(expirationPnL).toFixed(0)}`,
                 position: "top", fill: "#f59e0b", fontSize: 10, fontWeight: 600 }} />
           )}
           {/* Breakeven markers */}
