@@ -1038,13 +1038,17 @@ function GreeksDisplay({ greeks }) {
 
 function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
   const [livePrice, setLivePrice] = useState(null);
+  const [priceDelayed, setPriceDelayed] = useState(false);
 
-  // Fetch real underlying price from IBKR
+  // Fetch real underlying price from IBKR (auto-falls back to delayed)
   useEffect(() => {
     if (!underlying) return;
     let cancelled = false;
     apiFetch("/quote/" + encodeURIComponent(underlying)).then(data => {
-      if (!cancelled && data && data.price > 0) setLivePrice(data.price);
+      if (!cancelled && data && data.price > 0) {
+        setLivePrice(data.price);
+        setPriceDelayed(!!data.delayed);
+      }
     });
     return () => { cancelled = true; };
   }, [underlying]);
@@ -1138,7 +1142,7 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           Payoff at Expiration
         </div>
         <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", flexWrap: "wrap" }}>
-          {currentPrice > 0 && <span>{underlying}: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b></span>}
+          {currentPrice > 0 && <span>{underlying}: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b>{priceDelayed && <span style={{ color: "#f59e0b", fontSize: 9, marginLeft: 4, padding: "1px 4px", background: "rgba(245,158,11,0.15)", borderRadius: 3 }}>DELAYED</span>}</span>}
           {currentPrice <= 0 && <span>{underlying}: <b style={{ color: "var(--text-muted)" }}>Loading... ⏳</b></span>}
           <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{fmt.sign(currentPnL)}</b></span>
           <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{fmt.sign(maxProfit)}</b></span>
@@ -1184,7 +1188,7 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           {/* Current price marker — rendered AFTER Area so it's on top */}
           {currentPrice > 0 && (
             <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={3}
-              label={{ value: `📍 $${currentPrice.toFixed(2)} | Now: ${currentPnL >= 0 ? "+$" : "-$"}${Math.abs(currentPnL).toFixed(2)} | Exp: ${expirationPnL >= 0 ? "+$" : "-$"}${Math.abs(expirationPnL).toFixed(0)}`,
+              label={{ value: `📍 $${currentPrice.toFixed(2)}${priceDelayed ? " (D)" : ""} | Now: ${currentPnL >= 0 ? "+$" : "-$"}${Math.abs(currentPnL).toFixed(2)} | Exp: ${expirationPnL >= 0 ? "+$" : "-$"}${Math.abs(expirationPnL).toFixed(0)}`,
                 position: "top", fill: "#f59e0b", fontSize: 11, fontWeight: 700 }} />
           )}
           {/* Dot on the curve at current price */}

@@ -1257,13 +1257,27 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   // ══════════════════════════════════════════════════════════
 
   /**
-   * Get a real-time stock quote via reqMktData snapshot.
-   * Returns { last, bid, ask, close } or null on failure.
+   * Get a stock quote via reqMktData snapshot.
+   * Tries real-time first; on error 10089 (subscription required),
+   * automatically retries with delayed market data (type 3).
    */
   async getStockQuote(symbol: string): Promise<{ last: number; bid: number; ask: number; close: number; delayed: boolean } | null> {
+    // Try real-time first, then fall back to delayed on 10089
+    const result = await this._stockQuoteSnapshot(symbol, false);
+    if (result) return result;
+
+    // Retry with delayed market data
+    log.info(`[StockQuote] No real-time data for ${symbol}, retrying with delayed data...`);
+    return this._stockQuoteSnapshot(symbol, true);
+  }
+
+  private async _stockQuoteSnapshot(
+    symbol: string,
+    useDelayed: boolean
+  ): Promise<{ last: number; bid: number; ask: number; close: number; delayed: boolean } | null> {
     this.ensureConnected();
     const reqId = this.nextReqId++;
-    const prices = { bid: 0, ask: 0, last: 0, close: 0, isDelayed: false };
+    const prices = { bid: 0, ask: 0, last: 0, close: 0, isDelayed: useDelayed };
 
     const contract: any = {
       symbol,
@@ -1272,10 +1286,20 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       currency: "USD",
     };
 
+    // Switch market data type if requesting delayed
+    if (useDelayed) {
+      try { this.ib.reqMarketDataType(3); } catch {}
+    }
+
     return new Promise((resolve) => {
       let resolved = false;
+      let got10089 = false;
 
       const resolveWith = () => {
+        // Restore real-time mode after delayed request
+        if (useDelayed) {
+          try { this.ib.reqMarketDataType(1); } catch {}
+        }
         const price = prices.last || prices.close || ((prices.bid + prices.ask) / 2);
         if (price > 0) {
           resolve({ last: prices.last, bid: prices.bid, ask: prices.ask, close: prices.close, delayed: prices.isDelayed });
@@ -1317,6 +1341,16 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           if (errorCode === 10167) prices.isDelayed = true;
           return;
         }
+        // 10089 = subscription required, delayed available — abort this attempt
+        if (errorCode === 10089) {
+          got10089 = true;
+          if (!useDelayed) {
+            resolved = true;
+            cleanup();
+            resolve(null); // caller will retry with delayed
+          }
+          return;
+        }
         resolved = true;
         cleanup();
         resolve(null);
@@ -1339,6 +1373,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         this.ib.reqMktData(reqId, contract, "", true, false);
       } catch {
         cleanup();
+        if (useDelayed) { try { this.ib.reqMarketDataType(1); } catch {} }
         resolve(null);
         return;
       }
@@ -1357,7 +1392,13 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if (!resolved) {
           resolved = true;
           cleanup();
-          resolveWith();
+          if (useDelayed) { try { this.ib.reqMarketDataType(1); } catch {} }
+          // If we got 10089 during delayed attempt, still resolve with whatever we have
+          if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
+            resolveWith();
+          } else {
+            resolve(null);
+          }
         }
       }, 5_000);
     });
