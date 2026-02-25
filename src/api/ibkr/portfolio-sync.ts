@@ -1253,6 +1253,117 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
   }
 
   // ══════════════════════════════════════════════════════════
+  //  STOCK QUOTE (snapshot)
+  // ══════════════════════════════════════════════════════════
+
+  /**
+   * Get a real-time stock quote via reqMktData snapshot.
+   * Returns { last, bid, ask, close } or null on failure.
+   */
+  async getStockQuote(symbol: string): Promise<{ last: number; bid: number; ask: number; close: number; delayed: boolean } | null> {
+    this.ensureConnected();
+    const reqId = this.nextReqId++;
+    const prices = { bid: 0, ask: 0, last: 0, close: 0, isDelayed: false };
+
+    const contract: any = {
+      symbol,
+      secType: "STK",
+      exchange: "SMART",
+      currency: "USD",
+    };
+
+    return new Promise((resolve) => {
+      let resolved = false;
+
+      const resolveWith = () => {
+        const price = prices.last || prices.close || ((prices.bid + prices.ask) / 2);
+        if (price > 0) {
+          resolve({ last: prices.last, bid: prices.bid, ask: prices.ask, close: prices.close, delayed: prices.isDelayed });
+        } else {
+          resolve(null);
+        }
+      };
+
+      const onTick = (_reqId: number, tickType: number, price: number) => {
+        if (_reqId !== reqId || resolved) return;
+        if (price <= 0 || price === -1) return;
+        if (tickType === 1) prices.bid = price;
+        else if (tickType === 2) prices.ask = price;
+        else if (tickType === 4) prices.last = price;
+        else if (tickType === 9) prices.close = price;
+        else if (tickType === 66) { prices.bid = price; prices.isDelayed = true; }
+        else if (tickType === 67) { prices.ask = price; prices.isDelayed = true; }
+        else if (tickType === 68) { prices.last = price; prices.isDelayed = true; }
+        else if (tickType === 75) { prices.close = price; prices.isDelayed = true; }
+        else return;
+
+        if (prices.last > 0 && prices.bid > 0 && prices.ask > 0) {
+          resolved = true;
+          cleanup();
+          resolveWith();
+        }
+      };
+
+      const onSnapshotEnd = (_reqId: number) => {
+        if (_reqId !== reqId || resolved) return;
+        resolved = true;
+        cleanup();
+        resolveWith();
+      };
+
+      const onError = (_reqId: number, errorCode: number) => {
+        if (_reqId !== reqId || resolved) return;
+        if ([2104, 2106, 2119, 2158, 10167].includes(errorCode)) {
+          if (errorCode === 10167) prices.isDelayed = true;
+          return;
+        }
+        resolved = true;
+        cleanup();
+        resolve(null);
+      };
+
+      const cleanup = () => {
+        const EN = this.eventNameRef!;
+        this.ib.removeListener(EN.tickPrice, onTick);
+        this.ib.removeListener(EN.tickSnapshotEnd, onSnapshotEnd);
+        this.ib.removeListener(EN.error, onError);
+        try { this.ib.cancelMktData(reqId); } catch {}
+      };
+
+      const EventNameRef = this.eventNameRef!;
+      this.ib.on(EventNameRef.tickPrice, onTick);
+      this.ib.on(EventNameRef.tickSnapshotEnd, onSnapshotEnd);
+      this.ib.on(EventNameRef.error, onError);
+
+      try {
+        this.ib.reqMktData(reqId, contract, "", true, false);
+      } catch {
+        cleanup();
+        resolve(null);
+        return;
+      }
+
+      // Settle after 3s with partial data
+      setTimeout(() => {
+        if (!resolved && (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0)) {
+          resolved = true;
+          cleanup();
+          resolveWith();
+        }
+      }, 3_000);
+
+      // Hard timeout 5s
+      setTimeout(() => {
+        if (!resolved) {
+          resolved = true;
+          cleanup();
+          resolveWith();
+        }
+      }, 5_000);
+    });
+  }
+
+  // ══════════════════════════════════════════════════════════
   //  CONTRACT ID RESOLUTION (for combo orders)
   // ══════════════════════════════════════════════════════════
 

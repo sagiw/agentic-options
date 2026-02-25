@@ -1037,6 +1037,18 @@ function GreeksDisplay({ greeks }) {
 // ═══════════════════════════════════════════════════════════
 
 function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
+  const [livePrice, setLivePrice] = useState(null);
+
+  // Fetch real underlying price from IBKR
+  useEffect(() => {
+    if (!underlying) return;
+    let cancelled = false;
+    apiFetch("/quote/" + encodeURIComponent(underlying)).then(data => {
+      if (!cancelled && data && data.price > 0) setLivePrice(data.price);
+    });
+    return () => { cancelled = true; };
+  }, [underlying]);
+
   // Compute entry prices from position data
   const chartLegs = legs.map(l => {
     const mult = l.contract.multiplier || 100;
@@ -1050,9 +1062,9 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
     };
   });
 
-  // Get current underlying price from stock positions or estimate from option strikes
-  let currentPrice = 0;
-  if (allPositions) {
+  // Get current underlying price: prefer live IBKR quote, fallback to stock position, then strike midpoint
+  let currentPrice = livePrice || 0;
+  if (currentPrice <= 0 && allPositions) {
     const stock = allPositions.find(p =>
       (p.contract.symbol === underlying || p.contract.underlying === underlying) &&
       p.contract.type === "stock" && p.quantity > 0 && p.marketValue > 0
@@ -1060,7 +1072,7 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
     if (stock) currentPrice = stock.marketValue / stock.quantity;
   }
   if (currentPrice <= 0) {
-    // Estimate from strike midpoint
+    // Last resort: estimate from strike midpoint
     const strikes = chartLegs.map(l => l.strike).filter(Boolean);
     if (strikes.length) currentPrice = (Math.min(...strikes) + Math.max(...strikes)) / 2;
   }
@@ -1130,6 +1142,7 @@ function StrategyPayoffChart({ legs, underlying, allPositions, actualPnL }) {
           Payoff at Expiration
         </div>
         <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <span>{underlying}: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b>{livePrice ? "" : " ⏳"}</span>
           <span>Current P&L: <b style={{ color: currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{fmt.sign(currentPnL)}</b></span>
           <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>{fmt.sign(maxProfit)}</b></span>
           <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>{fmt.sign(maxLoss)}</b></span>

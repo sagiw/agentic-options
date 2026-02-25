@@ -758,6 +758,37 @@ app.post("/api/close", async (req, res) => {
 });
 
 /**
+ * GET /api/quote/:symbol — Get real-time stock quote via IBKR snapshot.
+ */
+app.get("/api/quote/:symbol", async (req, res) => {
+  try {
+    const symbol = (req.params.symbol || "").toUpperCase().trim();
+    if (!symbol) {
+      return res.status(400).json({ success: false, error: "Missing symbol" });
+    }
+    const quote = await ibkr.getStockQuote(symbol);
+    if (!quote) {
+      return res.status(404).json({ success: false, error: `No quote for ${symbol}` });
+    }
+    const price = quote.last || quote.close || ((quote.bid + quote.ask) / 2);
+    res.json({
+      success: true,
+      data: {
+        symbol,
+        price: Math.round(price * 100) / 100,
+        bid: quote.bid,
+        ask: quote.ask,
+        last: quote.last,
+        close: quote.close,
+        delayed: quote.delayed,
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/nbbo — Get real-time NBBO for a specific option contract.
  * Query params: symbol, strike, right (C/P), expiration (ISO date)
  */
