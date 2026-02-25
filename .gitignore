@@ -9,3 +9,5 @@ coverage/
 *.tgz
 tmp/
 vitest.config.ts.timestamp-*
+data/*.json
+data/*.json.tmp

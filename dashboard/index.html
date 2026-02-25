@@ -3608,6 +3608,8 @@ function App() {
     symbols: ["AAPL", "MSFT", "TSLA", "SPY"],
   });
   const [newWatchlistSymbol, setNewWatchlistSymbol] = useState("");
+  const [settingsSaveStatus, setSettingsSaveStatus] = useState(""); // "", "saving", "saved", "error"
+  const [settingsLoaded, setSettingsLoaded] = useState(false); // prevent save before initial load
   const [portfolioPlan, setPortfolioPlan] = useState(null);
   const [scanningAll, setScanningAll] = useState(false);
   const [expandedPlanIdx, setExpandedPlanIdx] = useState(null);
@@ -3770,6 +3772,44 @@ function App() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Load saved settings on mount
+  useEffect(() => {
+    fetch(API + "/settings")
+      .then(r => r.json())
+      .then(json => {
+        if (json.success && json.data) {
+          setGoals(json.data);
+          console.log("[Settings] Loaded from server:", JSON.stringify(json.data));
+        }
+      })
+      .catch(err => console.warn("[Settings] Failed to load:", err))
+      .finally(() => setSettingsLoaded(true));
+  }, []);
+
+  // Auto-save settings when goals change (debounced 500ms)
+  useEffect(() => {
+    if (!settingsLoaded) return; // Don't save before initial load completes
+    const timer = setTimeout(() => {
+      setSettingsSaveStatus("saving");
+      fetch(API + "/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(goals),
+      })
+        .then(r => r.json())
+        .then(json => {
+          if (json.success) {
+            setSettingsSaveStatus("saved");
+            setTimeout(() => setSettingsSaveStatus(""), 2000);
+          } else {
+            setSettingsSaveStatus("error");
+          }
+        })
+        .catch(() => setSettingsSaveStatus("error"));
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [goals, settingsLoaded]);
+
   // Auto-refresh portfolio every 30s
   useEffect(() => {
     const interval = setInterval(loadData, 30000);
@@ -3910,6 +3950,19 @@ function App() {
                   — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d | {goals.symbols.length} symbols
                 </span>
               </div>
+              {settingsSaveStatus && (
+                <span style={{
+                  fontSize: 10, fontWeight: 500, marginLeft: 8, padding: "2px 8px", borderRadius: 4,
+                  background: settingsSaveStatus === "saved" ? "rgba(16,185,129,0.15)" :
+                              settingsSaveStatus === "saving" ? "rgba(59,130,246,0.15)" :
+                              "rgba(239,68,68,0.15)",
+                  color: settingsSaveStatus === "saved" ? "var(--accent-green)" :
+                         settingsSaveStatus === "saving" ? "var(--accent-blue)" :
+                         "var(--accent-red)",
+                }}>
+                  {settingsSaveStatus === "saving" ? "Saving..." : settingsSaveStatus === "saved" ? "Saved ✓" : "Save error"}
+                </span>
+              )}
               <span className="goals-toggle-arrow" style={{ transform: goalsOpen ? "rotate(180deg)" : "rotate(0)" }}>▼</span>
             </div>
             {goalsOpen && (

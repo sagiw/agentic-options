@@ -32,6 +32,7 @@ import { logger, agentLogger } from "./utils/logger.js";
 import { getMarketSnapshot } from "./api/market-data/yahoo.js";
 import { submitStrategy, type SubmitResult } from "./api/ibkr/orders.js";
 import { estimateMargin, checkMarginAvailability } from "./utils/margin.js";
+import { loadSettings, saveSettings } from "./storage/settings.js";
 import type { OrderStatusUpdate } from "./api/ibkr/portfolio-sync.js";
 import type { Portfolio, AccountSummary } from "./types/portfolio.js";
 import type { RankedStrategy } from "./types/agents.js";
@@ -290,6 +291,41 @@ app.get("/api/chain/:symbol", async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  USER SETTINGS PERSISTENCE
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/settings — Load saved user settings (goals, watchlist)
+ */
+app.get("/api/settings", (_req, res) => {
+  try {
+    const settings = loadSettings();
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    log.warn("Failed to load settings", { error: String(err) });
+    res.status(500).json({ success: false, error: "Failed to load settings" });
+  }
+});
+
+/**
+ * POST /api/settings — Save user settings (goals, watchlist)
+ */
+app.post("/api/settings", (req, res) => {
+  try {
+    const saved = saveSettings(req.body);
+    log.info(`Settings saved: target=$${saved.monthlyTarget}, symbols=[${saved.symbols.join(",")}]`);
+    res.json({ success: true, data: saved });
+  } catch (err: any) {
+    log.warn("Failed to save settings", { error: String(err) });
+    if (err?.name === "ZodError") {
+      res.status(400).json({ success: false, error: "Invalid settings", details: err.issues });
+    } else {
+      res.status(500).json({ success: false, error: "Failed to save settings" });
+    }
   }
 });
 
