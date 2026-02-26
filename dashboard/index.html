@@ -1033,6 +1033,229 @@ function GreeksDisplay({ greeks }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  ACTION RECOMMENDATION LOGIC
+// ═══════════════════════════════════════════════════════════
+
+function getActionRecommendation(pnl, maxProfit, maxLoss, daysToExp) {
+  const pnlPct = maxProfit > 0 ? (pnl / maxProfit) * 100 : 0;
+  const lossPct = maxLoss < 0 ? (pnl / maxLoss) * 100 : 0;
+  if (pnl > 0) {
+    if (daysToExp != null && daysToExp <= 3) return { action: "close", tag: "CLOSE NOW", color: "#ef4444", reason: "Expiration imminent — close to avoid assignment risk" };
+    if (pnlPct >= 75) return { action: "close", tag: "TAKE PROFIT", color: "#10b981", reason: `${pnlPct.toFixed(0)}% of max profit reached — lock it in` };
+    if (daysToExp != null && daysToExp <= 7) return { action: "close", tag: "CLOSE SOON", color: "#f59e0b", reason: "Gamma risk high in last week — consider closing" };
+    if (daysToExp != null && daysToExp > 30 && pnlPct > 25) return { action: "roll", tag: "ROLL FOR MORE", color: "#8b5cf6", reason: "Profitable with time — roll out for more credit" };
+    return { action: "hold", tag: "HOLD", color: "#3b82f6", reason: "Let theta work for you" };
+  }
+  if (pnl < 0) {
+    if (daysToExp != null && daysToExp <= 3) return { action: "close", tag: "CLOSE NOW", color: "#ef4444", reason: "Expiration imminent — cut the loss" };
+    if (lossPct >= 75) return { action: "roll", tag: "ROLL OUT", color: "#8b5cf6", reason: "Deep loss — roll to new expiration for recovery" };
+    if (daysToExp != null && daysToExp > 21) return { action: "hold", tag: "HOLD", color: "#3b82f6", reason: "Plenty of time for recovery" };
+    if (daysToExp != null && daysToExp <= 14) return { action: "roll", tag: "ROLL OUT", color: "#f59e0b", reason: "Running out of time — consider rolling" };
+    return { action: "hold", tag: "MONITOR", color: "#64748b", reason: "Watch for reversal" };
+  }
+  return { action: "hold", tag: "BREAKEVEN", color: "#64748b", reason: "At breakeven — monitor" };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CONFIRMATION POPUP MODAL
+// ═══════════════════════════════════════════════════════════
+
+function ActionConfirmModal({ action, onConfirm, onCancel }) {
+  const [status, setStatus] = useState("idle"); // idle | submitting | success | error
+  const [resultMsg, setResultMsg] = useState("");
+
+  // Keyboard shortcuts: Escape to cancel, Enter to confirm
+  useEffect(() => {
+    if (!action) return;
+    const handleKey = (e) => {
+      if (e.key === "Escape" && status === "idle") {
+        e.preventDefault();
+        onCancel();
+      }
+      if (e.key === "Enter" && status === "idle") {
+        e.preventDefault();
+        handleConfirmFn();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [action, status]);
+
+  if (!action) return null;
+
+  const handleConfirmFn = async () => {
+    setStatus("submitting");
+    try {
+      const result = await submitCloseOrder(action.legs);
+      if (result.success) {
+        setStatus("success");
+        setResultMsg(result.message || "Order submitted successfully!");
+        setTimeout(() => { onCancel(); }, 2500);
+      } else {
+        setStatus("error");
+        setResultMsg(result.error || "Failed to submit order");
+      }
+    } catch (err) {
+      setStatus("error");
+      setResultMsg(String(err));
+    }
+  };
+
+  const netCredit = action.legs.reduce((sum, l) => {
+    const dir = l.side === "sell" ? 1 : -1;
+    return sum + dir * (l.price || 0) * (l.quantity || 1) * 100;
+  }, 0);
+
+  return (
+    <div style={{
+      position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
+      background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      zIndex: 10000, animation: "fadeIn 0.15s ease-out",
+    }} onClick={(e) => { if (e.target === e.currentTarget && status !== "submitting") onCancel(); }}>
+      <div style={{
+        background: "var(--card-bg, #1e293b)", border: "1px solid rgba(255,255,255,0.1)",
+        borderRadius: 12, padding: 0, maxWidth: 580, width: "95%",
+        boxShadow: "0 25px 50px rgba(0,0,0,0.5)", animation: "slideUp 0.2s ease-out",
+      }} onClick={(e) => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{
+          padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.08)",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ fontSize: 20 }}>{action.icon || "⚡"}</span>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-primary)" }}>{action.name}</div>
+              {action.strategyName && <div style={{ fontSize: 11, color: "var(--text-muted)" }}>{action.strategyName}</div>}
+            </div>
+          </div>
+          {action.recommended && (
+            <span style={{ padding: "3px 10px", borderRadius: 12, fontSize: 10, fontWeight: 700,
+              background: "rgba(16,185,129,0.15)", color: "#10b981", border: "1px solid rgba(16,185,129,0.3)",
+              letterSpacing: 0.5 }}>⭐ RECOMMENDED</span>
+          )}
+          {!action.recommended && action.tag && (
+            <span style={{ padding: "3px 10px", borderRadius: 12, fontSize: 10, fontWeight: 700,
+              background: `${action.tagColor || "#64748b"}22`, color: action.tagColor || "#64748b",
+              border: `1px solid ${action.tagColor || "#64748b"}44`, letterSpacing: 0.5 }}>{action.tag}</span>
+          )}
+        </div>
+
+        {/* Legs Table */}
+        <div style={{ padding: "12px 20px" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ color: "var(--text-muted)", fontSize: 10, textTransform: "uppercase", letterSpacing: 1 }}>
+                <th style={{ textAlign: "left", padding: "4px 6px" }}>Action</th>
+                <th style={{ textAlign: "left", padding: "4px 6px" }}>Symbol</th>
+                <th style={{ textAlign: "left", padding: "4px 6px" }}>Type</th>
+                <th style={{ textAlign: "right", padding: "4px 6px" }}>Strike</th>
+                <th style={{ textAlign: "right", padding: "4px 6px" }}>Qty</th>
+                <th style={{ textAlign: "right", padding: "4px 6px" }}>Price</th>
+              </tr>
+            </thead>
+            <tbody>
+              {action.legs.map((leg, li) => (
+                <tr key={li} style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
+                  <td style={{ padding: "6px", fontWeight: 700, color: leg.side === "buy" ? "#10b981" : "#ef4444" }}>
+                    {leg.side.toUpperCase()}
+                  </td>
+                  <td style={{ padding: "6px", color: "var(--text-primary)" }}>{leg.symbol}</td>
+                  <td style={{ padding: "6px" }}>
+                    <span style={{ padding: "2px 6px", borderRadius: 4, fontSize: 10, fontWeight: 600,
+                      background: leg.type === "call" ? "rgba(59,130,246,0.2)" : "rgba(239,68,68,0.2)",
+                      color: leg.type === "call" ? "#60a5fa" : "#f87171" }}>
+                      {leg.type.toUpperCase()}
+                    </span>
+                  </td>
+                  <td style={{ padding: "6px", textAlign: "right", color: "var(--text-primary)" }}>${leg.strike}</td>
+                  <td style={{ padding: "6px", textAlign: "right", color: "var(--text-primary)" }}>{leg.quantity}</td>
+                  <td style={{ padding: "6px", textAlign: "right", color: "var(--text-secondary)" }}>${(leg.price || 0).toFixed(2)}/sh</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Summary */}
+        <div style={{
+          padding: "12px 20px", borderTop: "1px solid rgba(255,255,255,0.08)",
+          display: "flex", gap: 20, flexWrap: "wrap", fontSize: 12,
+        }}>
+          <div>
+            <div style={{ color: "var(--text-muted)", fontSize: 10 }}>NET {netCredit >= 0 ? "CREDIT" : "DEBIT"}</div>
+            <div style={{ fontWeight: 700, fontSize: 16, color: netCredit >= 0 ? "#10b981" : "#ef4444" }}>
+              {netCredit >= 0 ? "+$" : "-$"}{Math.abs(netCredit).toFixed(2)}
+            </div>
+          </div>
+          {action.estimatedPnL != null && (
+            <div>
+              <div style={{ color: "var(--text-muted)", fontSize: 10 }}>EST. P&L CHANGE</div>
+              <div style={{ fontWeight: 700, fontSize: 16, color: action.estimatedPnL >= 0 ? "#10b981" : "#ef4444" }}>
+                {action.estimatedPnL >= 0 ? "+$" : "-$"}{Math.abs(action.estimatedPnL).toFixed(2)}
+              </div>
+            </div>
+          )}
+          {action.reason && (
+            <div style={{ flex: 1, minWidth: 150 }}>
+              <div style={{ color: "var(--text-muted)", fontSize: 10 }}>REASON</div>
+              <div style={{ fontSize: 12, color: "var(--text-secondary)" }}>{action.reason}</div>
+            </div>
+          )}
+        </div>
+
+        {/* Action Buttons */}
+        <div style={{
+          padding: "16px 20px", borderTop: "1px solid rgba(255,255,255,0.08)",
+          display: "flex", gap: 10, justifyContent: "flex-end",
+        }}>
+          {status === "idle" && (
+            <>
+              <button style={{
+                padding: "10px 20px", fontSize: 13, fontWeight: 600,
+                background: "rgba(100,116,139,0.2)", color: "var(--text-secondary)",
+                border: "1px solid rgba(100,116,139,0.3)", borderRadius: 8, cursor: "pointer",
+              }} onClick={onCancel}>✗ Cancel</button>
+              <button style={{
+                padding: "10px 24px", fontSize: 13, fontWeight: 700,
+                background: "var(--accent-green)", color: "#000",
+                border: "none", borderRadius: 8, cursor: "pointer",
+              }} onClick={handleConfirmFn}>✓ Confirm & Execute</button>
+            </>
+          )}
+          {status === "submitting" && (
+            <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 13, animation: "pulse 1s infinite" }}>
+              ⏳ Submitting to IBKR...
+            </span>
+          )}
+          {status === "success" && (
+            <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 13 }}>
+              ✅ {resultMsg}
+            </span>
+          )}
+          {status === "error" && (
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ color: "var(--accent-red)", fontSize: 12 }}>❌ {resultMsg}</span>
+              <button style={{
+                padding: "8px 16px", fontSize: 12, fontWeight: 600,
+                background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
+                border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
+              }} onClick={() => { setStatus("idle"); setResultMsg(""); }}>Retry</button>
+              <button style={{
+                padding: "8px 16px", fontSize: 12, fontWeight: 600,
+                background: "rgba(100,116,139,0.2)", color: "var(--text-secondary)",
+                border: "1px solid rgba(100,116,139,0.3)", borderRadius: 6, cursor: "pointer",
+              }} onClick={onCancel}>Close</button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 //  STRATEGY PAYOFF CHART (inline in position cards)
 // ═══════════════════════════════════════════════════════════
 
@@ -1209,6 +1432,7 @@ function PositionsTable({ positions }) {
   const [closeStatus, setCloseStatus] = useState({}); // { [key]: "confirming"|"submitting"|"success"|"error" }
   const [closeMessage, setCloseMessage] = useState({}); // { [key]: string }
   const [liveNBBO, setLiveNBBO] = useState({}); // { [cacheKey]: { bid, ask, mid, last } | "loading" }
+  const [confirmAction, setConfirmAction] = useState(null); // null=closed, object=modal open
 
   // ── Fetch live IBKR NBBO when a losing position is expanded ──
   useEffect(() => {
@@ -1250,6 +1474,11 @@ function PositionsTable({ positions }) {
     fetchIfNeeded(rollOutKey, underlying, p.contract.strike, right, newExpYYYYMMDD);
     fetchIfNeeded(rollShiftKey, underlying, shiftedStrike, right, newExpYYYYMMDD);
   }, [expandedPos, positions]);
+
+  // Open the confirmation modal for any action
+  const openActionModal = (actionObj) => {
+    setConfirmAction(actionObj);
+  };
 
   const handleClose = async (key, legs) => {
     if (closeStatus[key] !== "confirming") {
@@ -1444,6 +1673,7 @@ function PositionsTable({ positions }) {
   });
 
   return (
+    <>
     <table className="table">
       <thead>
         <tr>
@@ -1705,11 +1935,8 @@ function PositionsTable({ positions }) {
                           📋 Copy Close Instructions
                         </button>
 
-                        {/* ── Auto-execute close strategy button ── */}
+                        {/* ── Auto-execute close strategy via modal ── */}
                         {(() => {
-                          const closeKey = `strat-${si}`;
-                          const status = closeStatus[closeKey];
-                          const msg = closeMessage[closeKey];
                           const closingLegs = strat.legs.map(l => {
                             const lt = l.contract.type;
                             const isOpt = lt === "call" || lt === "put";
@@ -1727,59 +1954,53 @@ function PositionsTable({ positions }) {
                             };
                           });
 
-                          if (status === "success") {
-                            return (
-                              <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>
-                                ✅ {msg}
-                              </span>
-                            );
-                          }
-                          if (status === "error") {
-                            return (
-                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-red)", fontSize: 12 }}>❌ {msg}</span>
-                                <button className="manual-copy-btn" style={{ padding: "6px 10px", fontSize: 11, background: "rgba(239,68,68,0.15)", color: "var(--accent-red)" }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>
-                                  Dismiss
-                                </button>
-                              </div>
-                            );
-                          }
-                          if (status === "submitting") {
-                            return (
-                              <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>
-                                ⏳ Submitting to IBKR...
-                              </span>
-                            );
-                          }
-                          if (status === "confirming") {
-                            return (
-                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
-                                  ⚠️ Close {strat.legs.length} legs via IBKR?
-                                </span>
-                                <button style={{
-                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
-                                  background: "var(--accent-green)", color: "#000", border: "none",
-                                  borderRadius: 6, cursor: "pointer",
-                                }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
-                                  ✓ Confirm
-                                </button>
-                                <button className="manual-copy-btn" style={{ padding: "6px 10px", fontSize: 11 }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>
-                                  Cancel
-                                </button>
-                              </div>
-                            );
-                          }
+                          // Compute max profit/loss for credit spreads
+                          const totalPremiumRcvd = strat.legs.reduce((s, l) => {
+                            const isOpt = l.contract.type === "call" || l.contract.type === "put";
+                            const mult = l.contract.multiplier || 100;
+                            return s + (l.quantity < 0 ? l.averageCost : -l.averageCost);
+                          }, 0);
+                          const strikes = strat.legs.filter(l => l.contract.strike).map(l => l.contract.strike);
+                          const spreadWidth = strikes.length >= 2 ? (Math.max(...strikes) - Math.min(...strikes)) * 100 : 0;
+                          const estMaxProfit = totalPremiumRcvd > 0 ? totalPremiumRcvd : spreadWidth > 0 ? spreadWidth - Math.abs(totalPremiumRcvd) : Math.abs(totalPremiumRcvd);
+                          const estMaxLoss = totalPremiumRcvd > 0 ? -(spreadWidth - totalPremiumRcvd) : -Math.abs(totalPremiumRcvd);
+
+                          const rec = getActionRecommendation(totalPnL, estMaxProfit, estMaxLoss, daysToExp);
+
                           return (
-                            <button style={{
-                              padding: "8px 14px", fontSize: 12, fontWeight: 700,
-                              background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
-                              border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
-                            }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
-                              ⚡ Execute Close via IBKR
-                            </button>
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                              {/* Recommendation badge */}
+                              <span style={{
+                                display: "inline-flex", alignItems: "center", gap: 4,
+                                padding: "4px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700,
+                                background: `${rec.color}22`, color: rec.color,
+                                border: `1px solid ${rec.color}44`,
+                              }}>
+                                ⭐ {rec.tag}
+                              </span>
+                              <span style={{ fontSize: 11, color: "var(--text-secondary)", flex: 1 }}>{rec.reason}</span>
+                              <button style={{
+                                padding: "8px 14px", fontSize: 12, fontWeight: 700,
+                                background: totalPnL >= 0 ? "rgba(16,185,129,0.2)" : "rgba(239,68,68,0.15)",
+                                color: totalPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                                border: `1px solid ${totalPnL >= 0 ? "rgba(16,185,129,0.4)" : "rgba(239,68,68,0.3)"}`,
+                                borderRadius: 6, cursor: "pointer",
+                              }} onClick={(e) => {
+                                e.stopPropagation();
+                                openActionModal({
+                                  name: "Close " + strat.name,
+                                  strategyName: `${strat.icon} ${strat.name} — ${strat.underlying}`,
+                                  legs: closingLegs,
+                                  estimatedPnL: totalPnL,
+                                  reason: rec.reason,
+                                  recommended: true,
+                                  tag: rec.tag,
+                                  tagColor: rec.color,
+                                });
+                              }}>
+                                ⚡ Close Strategy via IBKR
+                              </button>
+                            </div>
                           );
                         })()}
                       </div>
@@ -2317,16 +2538,19 @@ function PositionsTable({ positions }) {
                           });
                         }
 
+                        const lossRec = getActionRecommendation(pnl, totalPremium || 0, -(totalPremium || Math.abs(pnl) * 2), daysToExp);
                         return (
                           <div className="pos-recovery">
-                            <div className="pos-recovery-title">
+                            <div className="pos-recovery-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
                               <span style={{ fontSize: 16 }}>🔄</span>
                               What Can You Do? — Recovery Options
+                              <span style={{
+                                marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4,
+                                padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                                background: `${lossRec.color}22`, color: lossRec.color, border: `1px solid ${lossRec.color}44`,
+                              }}>⭐ {lossRec.tag}: {lossRec.reason}</span>
                             </div>
                             {recoveryOptions.map((opt, oi) => {
-                              const recCloseKey = `rec-${i}-${oi}`;
-                              const recStatus = closeStatus[recCloseKey];
-                              const recMsg = closeMessage[recCloseKey];
                               const isCloseAction = opt.name === "Close & Accept Loss";
                               const hasRollLegs = !!opt.rollLegs;
                               // For Close & Accept Loss: single close leg
@@ -2439,64 +2663,34 @@ function PositionsTable({ positions }) {
                                   </div>
                                 )}
 
-                                {/* ── Auto-execute button ── */}
+                                {/* ── Auto-execute button via modal ── */}
                                 {canExecute && closingLegs && (
                                   <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(30,41,59,0.5)" }}>
-                                    {recStatus === "success" ? (
-                                      <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {recMsg}</span>
-                                    ) : recStatus === "error" ? (
-                                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                        <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {recMsg}</span>
-                                        <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                          onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Dismiss</button>
-                                      </div>
-                                    ) : recStatus === "submitting" ? (
-                                      <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>
-                                        ⏳ Submitting {hasRollLegs ? "roll" : "close"} order...
-                                      </span>
-                                    ) : recStatus === "confirming" ? (
-                                      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                                        <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
-                                          {hasRollLegs ? (
-                                            <>⚠️ Roll {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} (exp {currentExpIBKR}) → ${opt.newStrike} {opt.newExp} ({opt.newExpIBKR}) via IBKR?</>
-                                          ) : (
-                                            <>⚠️ Close {Math.abs(p.quantity)}x {underlying} {type.toUpperCase()} ${p.contract.strike} exp {currentExpIBKR} via IBKR?</>
-                                          )}
-                                        </span>
-                                        {hasRollLegs && opt.netPnL != null && (
-                                          <span style={{
-                                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 4,
-                                            background: opt.netPnL >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
-                                            color: opt.netPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
-                                          }}>
-                                            Est. {opt.netPnL >= 0 ? "credit" : "debit"}: {fmt.usd(Math.abs(opt.netPnL))}
-                                          </span>
-                                        )}
-                                        <button style={{
-                                          padding: "6px 14px", fontSize: 12, fontWeight: 700,
-                                          background: "var(--accent-green)", color: "#000", border: "none",
-                                          borderRadius: 6, cursor: "pointer",
-                                        }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
-                                          ✓ Confirm {hasRollLegs ? "Roll" : "Close"}
-                                        </button>
-                                        <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                          onClick={(e) => { e.stopPropagation(); cancelClose(recCloseKey); }}>Cancel</button>
-                                      </div>
-                                    ) : (
-                                      <button style={{
-                                        padding: "8px 16px", fontSize: 12, fontWeight: 700,
-                                        background: hasRollLegs ? "rgba(59,130,246,0.15)" : "rgba(239,68,68,0.15)",
-                                        color: hasRollLegs ? "var(--accent-blue)" : "var(--accent-red)",
-                                        border: `1px solid ${hasRollLegs ? "rgba(59,130,246,0.3)" : "rgba(239,68,68,0.3)"}`,
-                                        borderRadius: 6, cursor: "pointer", width: "100%",
-                                      }} onClick={(e) => { e.stopPropagation(); handleClose(recCloseKey, closingLegs); }}>
-                                        {hasRollLegs ? (
-                                          <>⚡ Execute Roll: {currentExpIBKR} → {opt.newExpIBKR} {opt.newStrike !== p.contract.strike ? `$${p.contract.strike}→$${opt.newStrike}` : `$${opt.newStrike}`} {opt.netPnL != null ? `(est. ${opt.netPnL >= 0 ? "credit" : "debit"} ${fmt.usd(Math.abs(opt.netPnL))})` : ""}</>
-                                        ) : (
-                                          <>⚡ Execute: {closeVerb} {Math.abs(p.quantity)}x exp {currentExpIBKR} @ {fmt.usd(roundTick(currentPerShare, underlying))}/sh via IBKR</>
-                                        )}
-                                      </button>
-                                    )}
+                                    <button style={{
+                                      padding: "8px 16px", fontSize: 12, fontWeight: 700,
+                                      background: hasRollLegs ? "rgba(59,130,246,0.15)" : "rgba(239,68,68,0.15)",
+                                      color: hasRollLegs ? "var(--accent-blue)" : "var(--accent-red)",
+                                      border: `1px solid ${hasRollLegs ? "rgba(59,130,246,0.3)" : "rgba(239,68,68,0.3)"}`,
+                                      borderRadius: 6, cursor: "pointer", width: "100%",
+                                    }} onClick={(e) => {
+                                      e.stopPropagation();
+                                      openActionModal({
+                                        name: hasRollLegs ? `Roll ${opt.name}` : opt.name,
+                                        strategyName: `${underlying} ${type.toUpperCase()} $${p.contract.strike}`,
+                                        legs: closingLegs,
+                                        estimatedPnL: hasRollLegs && opt.netPnL != null ? opt.netPnL : pnl,
+                                        reason: opt.desc,
+                                        recommended: opt.tag === "Recommended",
+                                        tag: opt.tag,
+                                        tagColor: opt.tagColor,
+                                      });
+                                    }}>
+                                      {hasRollLegs ? (
+                                        <>⚡ Execute Roll: {currentExpIBKR} → {opt.newExpIBKR} {opt.newStrike !== p.contract.strike ? `$${p.contract.strike}→$${opt.newStrike}` : `$${opt.newStrike}`} {opt.netPnL != null ? `(est. ${opt.netPnL >= 0 ? "credit" : "debit"} ${fmt.usd(Math.abs(opt.netPnL))})` : ""}</>
+                                      ) : (
+                                        <>⚡ Execute: {closeVerb} {Math.abs(p.quantity)}x exp {currentExpIBKR} @ {fmt.usd(roundTick(currentPerShare, underlying))}/sh via IBKR</>
+                                      )}
+                                    </button>
                                   </div>
                                 )}
                               </div>
@@ -2506,84 +2700,151 @@ function PositionsTable({ positions }) {
                         );
                       })()}
 
-                      {/* ── Profit position advice ── */}
+                      {/* ── Profit position — Smart Action Cards ── */}
                       {pnl > 0 && (() => {
-                        const profitCloseKey = `profit-${i}`;
-                        const profitStatus = closeStatus[profitCloseKey];
-                        const profitMsg = closeMessage[profitCloseKey];
-                        const profitClosingLegs = [{
-                          symbol: p.contract.underlying || sym.replace(/\d.*/,"") || sym,
+                        const underlying = p.contract.underlying || sym.replace(/\d.*/,"") || sym;
+                        const maxProfit = totalPremium || Math.abs(pnl) * 2; // estimate
+                        const maxLoss = -(totalPremium || Math.abs(pnl) * 2);
+                        const rec = getActionRecommendation(pnl, maxProfit, maxLoss, daysToExp);
+
+                        const baseClosingLegs = [{
+                          symbol: underlying,
                           type: type,
                           strike: p.contract.strike,
-                          expiration: currentExpIBKR, // YYYYMMDD — avoids timezone serialization risk
+                          expiration: currentExpIBKR,
                           side: p.quantity < 0 ? "buy" : "sell",
                           quantity: Math.abs(p.quantity),
-                          price: roundTick(currentPerShare, p.contract.underlying || sym),
+                          price: roundTick(currentPerShare, underlying),
                           exchange: p.contract.exchange || "SMART",
                         }];
+
+                        // Define available actions
+                        const actions = [];
+
+                        // 1. Take Profit (Close All)
+                        actions.push({
+                          id: "take-profit",
+                          icon: "💰",
+                          name: "Take Profit — Close All",
+                          desc: `Lock in ${fmt.usd(pnl)} profit (${Math.abs(pnlPct).toFixed(0)}% of premium). Many pros close at 50-75%.`,
+                          color: "#10b981",
+                          executable: true,
+                          legs: baseClosingLegs,
+                          estimatedPnL: pnl,
+                        });
+
+                        // 2. Hold
+                        actions.push({
+                          id: "hold",
+                          icon: "⏳",
+                          name: isSold ? "Hold & Let Theta Decay" : "Hold & Let It Run",
+                          desc: isSold
+                            ? "Keep the position to capture remaining premium. Risk: underlying could reverse."
+                            : "Let the position continue — more upside potential. Risk: time decay + reversal.",
+                          color: "#3b82f6",
+                          executable: false,
+                        });
+
+                        // 3. Partial close (if qty >= 2)
+                        if (Math.abs(p.quantity) >= 2) {
+                          const halfQty = Math.ceil(Math.abs(p.quantity) / 2);
+                          actions.push({
+                            id: "partial",
+                            icon: "✂️",
+                            name: `Partial Close — ${halfQty} of ${Math.abs(p.quantity)}`,
+                            desc: `Close ${halfQty} contracts to lock in partial profit. Let the rest run.`,
+                            color: "#8b5cf6",
+                            executable: true,
+                            legs: [{
+                              ...baseClosingLegs[0],
+                              quantity: halfQty,
+                            }],
+                            estimatedPnL: pnl * (halfQty / Math.abs(p.quantity)),
+                          });
+                        }
+
+                        // Warning for near expiration
+                        const expiryWarning = daysToExp != null && daysToExp <= 7
+                          ? `⚠️ Only ${daysToExp} days left — gamma risk high near expiration.`
+                          : daysToExp != null && daysToExp <= 21
+                          ? `⚠️ ${daysToExp} days left — theta decay accelerating.`
+                          : null;
+
                         return (
-                        <div className="pos-close-recommendation pos-rec-profit" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                        <div className="pos-close-recommendation pos-rec-profit" style={{ flexDirection: "column", alignItems: "flex-start", gap: 10 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, width: "100%" }}>
                             <span style={{ fontSize: 16 }}>💰</span>
-                            <b>You're in profit — here are your options:</b>
+                            <b>You're in profit — Smart Actions:</b>
+                            <span style={{
+                              marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 4,
+                              padding: "3px 8px", borderRadius: 6, fontSize: 10, fontWeight: 700,
+                              background: `${rec.color}22`, color: rec.color, border: `1px solid ${rec.color}44`,
+                            }}>⭐ {rec.tag}</span>
                           </div>
-                          <div style={{ fontSize: 12, lineHeight: 1.6, color: "var(--text-secondary)" }}>
-                            {isSold ? (
-                              <>
-                                <b style={{ color: "var(--accent-green)" }}>1. Close now</b> — Lock in {fmt.usd(pnl)} profit ({Math.abs(pnlPct).toFixed(0)}% of max). Many pros close at 50-75% of max profit.
-                                <br/><b style={{ color: "var(--accent-cyan)" }}>2. Let it ride</b> — Keep the position to capture the remaining premium. Risk: the underlying could reverse.
-                                {daysToExp != null && daysToExp <= 7 && (
-                                  <><br/><b style={{ color: "var(--accent-amber)" }}>⚠️ Only {daysToExp} days left</b> — gamma risk is high near expiration. Most pros close before the last week.</>
-                                )}
-                              </>
-                            ) : (
-                              <>
-                                <b style={{ color: "var(--accent-green)" }}>1. Sell to Close</b> — Take the {fmt.usd(pnl)} profit now. A bird in hand.
-                                <br/><b style={{ color: "var(--accent-cyan)" }}>2. Sell half</b> — Close {Math.ceil(Math.abs(p.quantity)/2)} of {Math.abs(p.quantity)} contracts. Lock in some profit, let the rest run.
-                                <br/><b style={{ color: "var(--accent-purple)" }}>3. Roll up/out</b> — Sell this and buy a further OTM option to stay in the trade with reduced risk.
-                                {daysToExp != null && daysToExp <= 21 && (
-                                  <><br/><b style={{ color: "var(--accent-amber)" }}>⚠️ {daysToExp} days left</b> — theta decay accelerating. Consider taking profits.</>
-                                )}
-                              </>
-                            )}
-                          </div>
-                          {/* ── Auto-execute close for profit ── */}
-                          <div style={{ marginTop: 4, width: "100%" }}>
-                            {profitStatus === "success" ? (
-                              <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {profitMsg}</span>
-                            ) : profitStatus === "error" ? (
-                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {profitMsg}</span>
-                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(profitCloseKey); }}>Dismiss</button>
-                              </div>
-                            ) : profitStatus === "submitting" ? (
-                              <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting close order...</span>
-                            ) : profitStatus === "confirming" ? (
-                              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
-                                  ⚠️ {closeVerb} {Math.abs(p.quantity)}x and lock in {fmt.usd(pnl)} profit?
-                                </span>
-                                <button style={{
-                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
-                                  background: "var(--accent-green)", color: "#000", border: "none",
-                                  borderRadius: 6, cursor: "pointer",
-                                }} onClick={(e) => { e.stopPropagation(); handleClose(profitCloseKey, profitClosingLegs); }}>
-                                  ✓ Close & Lock Profit
-                                </button>
-                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(profitCloseKey); }}>Cancel</button>
-                              </div>
-                            ) : (
-                              <button style={{
-                                padding: "10px 18px", fontSize: 13, fontWeight: 700,
-                                background: "rgba(16,185,129,0.2)", color: "var(--accent-green)",
-                                border: "1px solid rgba(16,185,129,0.4)", borderRadius: 8, cursor: "pointer",
-                                width: "100%",
-                              }} onClick={(e) => { e.stopPropagation(); handleClose(profitCloseKey, profitClosingLegs); }}>
-                                ⚡ {closeVerb} Now — Lock in {fmt.usd(pnl)} Profit via IBKR
-                              </button>
-                            )}
+                          {expiryWarning && (
+                            <div style={{ fontSize: 11, color: "var(--accent-amber)", fontWeight: 600, width: "100%" }}>
+                              {expiryWarning}
+                            </div>
+                          )}
+                          <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%" }}>
+                            {actions.map(act => {
+                              const isRecommended = (
+                                (rec.action === "close" && act.id === "take-profit") ||
+                                (rec.action === "hold" && act.id === "hold") ||
+                                (rec.action === "roll" && act.id === "partial")
+                              );
+                              return (
+                                <div key={act.id} style={{
+                                  display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                                  borderRadius: 8, cursor: act.executable ? "pointer" : "default",
+                                  background: isRecommended ? `${act.color}15` : "rgba(255,255,255,0.03)",
+                                  border: isRecommended ? `2px solid ${act.color}55` : "1px solid rgba(255,255,255,0.06)",
+                                  transition: "all 0.15s",
+                                }} onClick={act.executable ? (e) => {
+                                  e.stopPropagation();
+                                  openActionModal({
+                                    name: act.name,
+                                    strategyName: `${sym} ${type.toUpperCase()} $${p.contract.strike}`,
+                                    legs: act.legs,
+                                    estimatedPnL: act.estimatedPnL,
+                                    reason: act.desc,
+                                    recommended: isRecommended,
+                                    tag: isRecommended ? rec.tag : null,
+                                    tagColor: act.color,
+                                  });
+                                } : undefined}>
+                                  <span style={{ fontSize: 18 }}>{act.icon}</span>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 700, fontSize: 12, color: act.color }}>
+                                      {act.name}
+                                      {isRecommended && <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.8 }}>⭐ Recommended</span>}
+                                    </div>
+                                    <div style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 2 }}>{act.desc}</div>
+                                  </div>
+                                  {act.executable && (
+                                    <button style={{
+                                      padding: "6px 12px", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap",
+                                      background: `${act.color}22`, color: act.color,
+                                      border: `1px solid ${act.color}44`, borderRadius: 6, cursor: "pointer",
+                                    }} onClick={(e) => {
+                                      e.stopPropagation();
+                                      openActionModal({
+                                        name: act.name,
+                                        strategyName: `${sym} ${type.toUpperCase()} $${p.contract.strike}`,
+                                        legs: act.legs,
+                                        estimatedPnL: act.estimatedPnL,
+                                        reason: act.desc,
+                                        recommended: isRecommended,
+                                        tag: isRecommended ? rec.tag : null,
+                                        tagColor: act.color,
+                                      });
+                                    }}>
+                                      ⚡ Execute
+                                    </button>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                         );
@@ -2662,61 +2923,38 @@ function PositionsTable({ positions }) {
                           Copy All
                         </button>
 
-                        {/* ── Auto-execute close button ── */}
+                        {/* ── Auto-execute close button via modal ── */}
                         {(() => {
-                          const closeKey = `pos-${i}`;
-                          const status = closeStatus[closeKey];
-                          const msg = closeMessage[closeKey];
                           const closingLegs = [{
                             symbol: p.contract.underlying || sym.replace(/\d.*/,"") || sym,
                             type: type,
                             strike: p.contract.strike,
-                            expiration: currentExpIBKR, // YYYYMMDD — avoids timezone serialization risk
+                            expiration: currentExpIBKR,
                             side: p.quantity < 0 ? "buy" : "sell",
                             quantity: Math.abs(p.quantity),
                             price: roundTick(currentPerShare, p.contract.underlying || sym),
                             exchange: p.contract.exchange || "SMART",
                           }];
-
-                          if (status === "success") {
-                            return <span style={{ color: "var(--accent-green)", fontWeight: 600, fontSize: 12 }}>✅ {msg}</span>;
-                          }
-                          if (status === "error") {
-                            return (
-                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-red)", fontSize: 11 }}>❌ {msg}</span>
-                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>Dismiss</button>
-                              </div>
-                            );
-                          }
-                          if (status === "submitting") {
-                            return <span style={{ color: "var(--accent-amber)", fontWeight: 600, fontSize: 12, animation: "pulse 1s infinite" }}>⏳ Submitting...</span>;
-                          }
-                          if (status === "confirming") {
-                            return (
-                              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                                <span style={{ color: "var(--accent-amber)", fontSize: 12, fontWeight: 600 }}>
-                                  ⚠️ {closeVerb} {Math.abs(p.quantity)}x exp {currentExpIBKR} via IBKR?
-                                </span>
-                                <button style={{
-                                  padding: "6px 14px", fontSize: 12, fontWeight: 700,
-                                  background: "var(--accent-green)", color: "#000", border: "none",
-                                  borderRadius: 6, cursor: "pointer",
-                                }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
-                                  ✓ Confirm
-                                </button>
-                                <button className="manual-copy-btn" style={{ padding: "5px 8px", fontSize: 11 }}
-                                  onClick={(e) => { e.stopPropagation(); cancelClose(closeKey); }}>Cancel</button>
-                              </div>
-                            );
-                          }
                           return (
                             <button style={{
                               padding: "8px 14px", fontSize: 12, fontWeight: 700,
-                              background: "rgba(239,68,68,0.15)", color: "var(--accent-red)",
-                              border: "1px solid rgba(239,68,68,0.3)", borderRadius: 6, cursor: "pointer",
-                            }} onClick={(e) => { e.stopPropagation(); handleClose(closeKey, closingLegs); }}>
+                              background: pnl >= 0 ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+                              color: pnl >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                              border: `1px solid ${pnl >= 0 ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+                              borderRadius: 6, cursor: "pointer",
+                            }} onClick={(e) => {
+                              e.stopPropagation();
+                              openActionModal({
+                                name: `${closeVerb} Position`,
+                                strategyName: `${sym} ${type.toUpperCase()} $${p.contract.strike}`,
+                                legs: closingLegs,
+                                estimatedPnL: pnl,
+                                reason: pnl >= 0 ? "Close to lock in profit" : "Close to cut losses",
+                                recommended: false,
+                                tag: pnl >= 0 ? "TAKE PROFIT" : "CUT LOSS",
+                                tagColor: pnl >= 0 ? "#10b981" : "#ef4444",
+                              });
+                            }}>
                               ⚡ {closeVerb} exp {currentExpIBKR} via IBKR
                             </button>
                           );
@@ -2749,6 +2987,19 @@ function PositionsTable({ positions }) {
         })}
       </tbody>
     </table>
+
+    {/* ── Action Confirmation Modal ── */}
+    {confirmAction && (
+      <ActionConfirmModal
+        action={confirmAction}
+        onConfirm={async (legs) => {
+          const result = await submitCloseOrder(legs);
+          return result;
+        }}
+        onCancel={() => setConfirmAction(null)}
+      />
+    )}
+    </>
   );
 }
 
