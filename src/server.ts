@@ -1268,11 +1268,10 @@ async function runAnalysis(
     }
   }
 
-  // 4. Absolute fallback (should rarely happen)
+  // 4. No fallback — if no real data, throw an error
   if (underlyingPrice <= 0) {
-    underlyingPrice = 100;
-    log.warn(`No market data for ${symbol} — using $100 fallback`);
-    dataSource = "fallback";
+    log.error(`No market data for ${symbol} — all sources failed (IBKR, portfolio, Yahoo)`);
+    throw new Error(`No market data available for ${symbol}. Make sure IBKR is connected and the symbol is valid.`);
   }
 
   // If we got price from IBKR but not IV/HV, supplement from Yahoo

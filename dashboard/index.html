@@ -4651,50 +4651,56 @@ function App() {
             </button>
           </div>
 
-          {/* Account + Market context for recommendations */}
-          <div className="analysis-account-bar">
-            {recommendations?.market ? (
-              <>
-                <div className="analysis-account-item">
-                  <div className="analysis-account-dot" style={{ background: "var(--accent-blue)" }} />
-                  <span style={{ color: "var(--text-muted)" }}>{symbol}:</span>
-                  <strong style={{ color: "var(--accent-blue)" }}>{fmt.usd(recommendations.market.price)}</strong>
+          {/* ── Data Source Banner — prominent, always visible ── */}
+          {recommendations?.market && (() => {
+            const ds = recommendations.market.dataSource;
+            const isIBKR = ds === "ibkr" || ds === "ibkr-delayed";
+            const isLive = ds === "ibkr";
+            const isDelayed = ds === "ibkr-delayed";
+            const isYahoo = ds === "yahoo";
+            const bannerColor = isLive ? "#10b981" : isDelayed ? "#f59e0b" : isYahoo ? "#3b82f6" : "#ef4444";
+            const bannerBg = isLive ? "rgba(16,185,129,0.1)" : isDelayed ? "rgba(245,158,11,0.1)" : isYahoo ? "rgba(59,130,246,0.1)" : "rgba(239,68,68,0.1)";
+            const sourceLabel = isLive ? "IBKR REAL-TIME" : isDelayed ? "IBKR DELAYED (15min)" : isYahoo ? "YAHOO FINANCE" : ds === "portfolio" ? "IBKR PORTFOLIO" : "UNKNOWN SOURCE";
+            const sourceIcon = isLive ? "🟢" : isDelayed ? "🟡" : isYahoo ? "🔵" : "🔴";
+            return (
+              <div style={{ background: bannerBg, border: `1px solid ${bannerColor}`, borderRadius: 8, padding: "10px 16px", marginBottom: 12, display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>{sourceIcon}</span>
+                  <span style={{ color: bannerColor, fontWeight: 700, fontSize: 12, letterSpacing: 1 }}>{sourceLabel}</span>
                 </div>
-                <div className="analysis-account-item">
-                  <div className="analysis-account-dot" style={{ background: "var(--accent-purple)" }} />
-                  <span style={{ color: "var(--text-muted)" }}>IV Rank:</span>
-                  <strong style={{ color: "var(--accent-purple)" }}>{recommendations.market.ivRank}</strong>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                  <span style={{ color: "var(--text-muted)", fontSize: 11 }}>{symbol}:</span>
+                  <span style={{ color: "var(--text-primary)", fontWeight: 700, fontSize: 20 }}>${recommendations.market.price.toFixed(2)}</span>
                 </div>
-                <div className="analysis-account-item">
-                  <div className="analysis-account-dot" style={{ background: "var(--accent-amber)" }} />
-                  <span style={{ color: "var(--text-muted)" }}>HV30:</span>
-                  <strong style={{ color: "var(--accent-amber)" }}>{(recommendations.market.hv30 * 100).toFixed(1)}%</strong>
+                <div style={{ display: "flex", gap: 16, fontSize: 11 }}>
+                  <span style={{ color: "var(--text-muted)" }}>IV Rank: <b style={{ color: "var(--accent-purple)" }}>{recommendations.market.ivRank}</b></span>
+                  <span style={{ color: "var(--text-muted)" }}>HV30: <b style={{ color: "var(--accent-amber)" }}>{(recommendations.market.hv30 * 100).toFixed(1)}%</b></span>
                 </div>
-              </>
-            ) : null}
-            <div className="analysis-account-item">
-              <div className="analysis-account-dot" style={{ background: "var(--accent-green)" }} />
-              <span style={{ color: "var(--text-muted)" }}>Available:</span>
-              <strong style={{ color: "var(--accent-green)" }}>{fmt.usd(recommendations?.account?.availableFunds || acct.availableFunds)}</strong>
-            </div>
-            <div className="analysis-account-item">
-              <div className="analysis-account-dot" style={{ background: "var(--accent-purple)" }} />
-              <span style={{ color: "var(--text-muted)" }}>Tier:</span>
-              <strong style={{ color: "var(--accent-purple)", textTransform: "uppercase" }}>
-                {recommendations?.account?.tier || acct.tier || "medium"}
-              </strong>
-            </div>
-            {recommendations?.market?.dataSource && (
-              <div className={`data-source-badge ${["ibkr", "ibkr-delayed", "yahoo", "portfolio"].includes(recommendations.market.dataSource) ? "data-source-live" : "data-source-demo"}`} style={{ marginLeft: "auto" }}>
-                <div style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
-                {recommendations.market.dataSource === "ibkr" ? "IBKR Real-Time"
-                  : recommendations.market.dataSource === "ibkr-delayed" ? "IBKR Delayed"
-                  : recommendations.market.dataSource === "yahoo" ? "Yahoo Finance"
-                  : recommendations.market.dataSource === "portfolio" ? "IBKR Portfolio"
-                  : "Synthetic"}
+                <div style={{ marginLeft: "auto", display: "flex", gap: 16, fontSize: 11 }}>
+                  <span style={{ color: "var(--text-muted)" }}>Available: <b style={{ color: "var(--accent-green)" }}>{fmt.usd(recommendations?.account?.availableFunds || acct.availableFunds)}</b></span>
+                  <span style={{ color: "var(--text-muted)" }}>Tier: <b style={{ color: "var(--accent-purple)", textTransform: "uppercase" }}>{recommendations?.account?.tier || acct.tier || "medium"}</b></span>
+                </div>
               </div>
-            )}
-          </div>
+            );
+          })()}
+
+          {/* Account bar — when no analysis yet */}
+          {!recommendations?.market && (
+            <div className="analysis-account-bar">
+              <div className="analysis-account-item">
+                <div className="analysis-account-dot" style={{ background: "var(--accent-green)" }} />
+                <span style={{ color: "var(--text-muted)" }}>Available:</span>
+                <strong style={{ color: "var(--accent-green)" }}>{fmt.usd(acct.availableFunds)}</strong>
+              </div>
+              <div className="analysis-account-item">
+                <div className="analysis-account-dot" style={{ background: "var(--accent-purple)" }} />
+                <span style={{ color: "var(--text-muted)" }}>Tier:</span>
+                <strong style={{ color: "var(--accent-purple)", textTransform: "uppercase" }}>
+                  {acct.tier || "medium"}
+                </strong>
+              </div>
+            </div>
+          )}
 
           {analyzing && (
             <div className="loading">
