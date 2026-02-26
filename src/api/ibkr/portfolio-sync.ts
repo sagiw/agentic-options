@@ -1286,20 +1286,17 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
       currency: "USD",
     };
 
-    // Switch market data type if requesting delayed
-    if (useDelayed) {
-      try { this.ib.reqMarketDataType(3); } catch {}
-    }
+    // Explicitly set market data type: 1=REALTIME, 3=DELAYED
+    // Must set explicitly since other methods may leave it in type 4 (delayed-frozen)
+    try { this.ib.reqMarketDataType(useDelayed ? 3 : 1); } catch {}
 
     return new Promise((resolve) => {
       let resolved = false;
       let got10089 = false;
 
       const resolveWith = () => {
-        // Restore real-time mode after delayed request
-        if (useDelayed) {
-          try { this.ib.reqMarketDataType(1); } catch {}
-        }
+        // Always restore real-time mode
+        try { this.ib.reqMarketDataType(1); } catch {}
         const price = prices.last || prices.close || ((prices.bid + prices.ask) / 2);
         if (price > 0) {
           resolve({ last: prices.last, bid: prices.bid, ask: prices.ask, close: prices.close, delayed: prices.isDelayed });
@@ -1373,7 +1370,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         this.ib.reqMktData(reqId, contract, "", true, false);
       } catch {
         cleanup();
-        if (useDelayed) { try { this.ib.reqMarketDataType(1); } catch {} }
+        try { this.ib.reqMarketDataType(1); } catch {}
         resolve(null);
         return;
       }
@@ -1392,8 +1389,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         if (!resolved) {
           resolved = true;
           cleanup();
-          if (useDelayed) { try { this.ib.reqMarketDataType(1); } catch {} }
-          // If we got 10089 during delayed attempt, still resolve with whatever we have
+          try { this.ib.reqMarketDataType(1); } catch {}
           if (prices.bid > 0 || prices.ask > 0 || prices.last > 0 || prices.close > 0) {
             resolveWith();
           } else {
