@@ -1263,12 +1263,22 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
    */
   async getStockQuote(symbol: string): Promise<{ last: number; bid: number; ask: number; close: number; delayed: boolean } | null> {
     // Try real-time first, then fall back to delayed on 10089
+    log.info(`[StockQuote] Requesting real-time quote for ${symbol}...`);
     const result = await this._stockQuoteSnapshot(symbol, false);
-    if (result) return result;
+    if (result) {
+      log.info(`[StockQuote] ${symbol} real-time: last=${result.last} bid=${result.bid} ask=${result.ask} close=${result.close}`);
+      return result;
+    }
 
     // Retry with delayed market data
     log.info(`[StockQuote] No real-time data for ${symbol}, retrying with delayed data...`);
-    return this._stockQuoteSnapshot(symbol, true);
+    const delayed = await this._stockQuoteSnapshot(symbol, true);
+    if (delayed) {
+      log.info(`[StockQuote] ${symbol} delayed: last=${delayed.last} bid=${delayed.bid} ask=${delayed.ask} close=${delayed.close}`);
+    } else {
+      log.warn(`[StockQuote] ${symbol} — no data at all (neither real-time nor delayed)`);
+    }
+    return delayed;
   }
 
   private async _stockQuoteSnapshot(
@@ -1332,7 +1342,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         resolveWith();
       };
 
-      const onError = (_reqId: number, errorCode: number) => {
+      const onError = (_reqId: number, errorCode: number, errorMsg: string) => {
         if (_reqId !== reqId || resolved) return;
         if ([2104, 2106, 2119, 2158, 10167].includes(errorCode)) {
           if (errorCode === 10167) prices.isDelayed = true;
@@ -1340,6 +1350,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
         }
         // 10089 = subscription required, delayed available — abort this attempt
         if (errorCode === 10089) {
+          log.info(`[StockQuote] ${symbol} error 10089 (useDelayed=${useDelayed}): ${errorMsg}`);
           got10089 = true;
           if (!useDelayed) {
             resolved = true;
@@ -1348,6 +1359,7 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
           }
           return;
         }
+        log.warn(`[StockQuote] ${symbol} error ${errorCode} (useDelayed=${useDelayed}): ${errorMsg}`);
         resolved = true;
         cleanup();
         resolve(null);
