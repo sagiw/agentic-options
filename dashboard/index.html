@@ -817,7 +817,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-const { useState, useEffect, useCallback, useMemo } = React;
+const { useState, useEffect, useCallback, useMemo, useRef } = React;
 const RC = window.Recharts || {};
 const { AreaChart, Area, BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, ReferenceDot } = RC;
 
@@ -1063,6 +1063,41 @@ function getActionRecommendation(pnl, maxProfit, maxLoss, daysToExp) {
 function ActionConfirmModal({ action, onConfirm, onCancel }) {
   const [status, setStatus] = useState("idle"); // idle | submitting | success | error
   const [resultMsg, setResultMsg] = useState("");
+  const submittingRef = useRef(false); // guard against double-submit
+
+  // Reset state when a new action is opened
+  useEffect(() => {
+    if (action) {
+      setStatus("idle");
+      setResultMsg("");
+      submittingRef.current = false;
+    }
+  }, [action]);
+
+  if (!action) return null;
+
+  const handleConfirmFn = async () => {
+    // Guard: prevent double execution
+    if (submittingRef.current || status !== "idle") return;
+    submittingRef.current = true;
+    setStatus("submitting");
+    try {
+      const result = await submitCloseOrder(action.legs);
+      if (result.success) {
+        setStatus("success");
+        setResultMsg(result.message || "Order submitted successfully!");
+        setTimeout(() => { submittingRef.current = false; onCancel(); }, 2500);
+      } else {
+        setStatus("error");
+        setResultMsg(result.error || "Failed to submit order");
+        submittingRef.current = false;
+      }
+    } catch (err) {
+      setStatus("error");
+      setResultMsg(String(err));
+      submittingRef.current = false;
+    }
+  };
 
   // Keyboard shortcuts: Escape to cancel, Enter to confirm
   useEffect(() => {
@@ -1072,7 +1107,7 @@ function ActionConfirmModal({ action, onConfirm, onCancel }) {
         e.preventDefault();
         onCancel();
       }
-      if (e.key === "Enter" && status === "idle") {
+      if (e.key === "Enter" && status === "idle" && !submittingRef.current) {
         e.preventDefault();
         handleConfirmFn();
       }
@@ -1080,26 +1115,6 @@ function ActionConfirmModal({ action, onConfirm, onCancel }) {
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
   }, [action, status]);
-
-  if (!action) return null;
-
-  const handleConfirmFn = async () => {
-    setStatus("submitting");
-    try {
-      const result = await submitCloseOrder(action.legs);
-      if (result.success) {
-        setStatus("success");
-        setResultMsg(result.message || "Order submitted successfully!");
-        setTimeout(() => { onCancel(); }, 2500);
-      } else {
-        setStatus("error");
-        setResultMsg(result.error || "Failed to submit order");
-      }
-    } catch (err) {
-      setStatus("error");
-      setResultMsg(String(err));
-    }
-  };
 
   const netCredit = action.legs.reduce((sum, l) => {
     const dir = l.side === "sell" ? 1 : -1;
@@ -1205,6 +1220,54 @@ function ActionConfirmModal({ action, onConfirm, onCancel }) {
           )}
         </div>
 
+        {/* IBKR Order Details — exact command being sent */}
+        <div style={{
+          padding: "12px 20px", borderTop: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(30,41,59,0.5)",
+        }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: 1, marginBottom: 8 }}>
+            📡 IBKR Order Details — What will be sent:
+          </div>
+          <div style={{ fontFamily: "monospace", fontSize: 11, lineHeight: 1.8, color: "var(--text-secondary)" }}>
+            {action.legs.map((leg, li) => {
+              const expDate = leg.expiration ? (
+                /^\d{8}$/.test(String(leg.expiration))
+                  ? new Date(parseInt(String(leg.expiration).slice(0,4)), parseInt(String(leg.expiration).slice(4,6))-1, parseInt(String(leg.expiration).slice(6,8)))
+                  : new Date(leg.expiration)
+              ) : null;
+              const expStr = expDate ? expDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "2-digit" }) : "—";
+              return (
+                <div key={li} style={{ padding: "6px 8px", borderRadius: 4, marginBottom: 4,
+                  background: "rgba(0,0,0,0.3)", border: "1px solid rgba(255,255,255,0.05)" }}>
+                  <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+                    <span><b style={{ color: leg.side === "buy" ? "#10b981" : "#ef4444" }}>Leg {li+1}: {leg.side.toUpperCase()}</b></span>
+                    <span>Qty: <b>{leg.quantity}</b></span>
+                    <span>Symbol: <b>{leg.symbol}</b></span>
+                    <span>SecType: <b>{leg.type === "call" || leg.type === "put" ? "OPT" : "STK"}</b></span>
+                    {(leg.type === "call" || leg.type === "put") && (
+                      <>
+                        <span>Right: <b>{leg.type === "call" ? "CALL" : "PUT"}</b></span>
+                        <span>Strike: <b>${leg.strike}</b></span>
+                        <span>Exp: <b>{leg.expiration}</b> ({expStr})</span>
+                        <span>Multiplier: <b>100</b></span>
+                      </>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", gap: 16, marginTop: 2, color: "var(--text-muted)" }}>
+                    <span>Exchange: <b>{leg.exchange || "SMART"}</b></span>
+                    <span>OrderType: <b>LMT</b></span>
+                    <span>Limit: <b>${(leg.price || 0).toFixed(2)}</b></span>
+                    <span>TIF: <b>DAY</b></span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 6, fontStyle: "italic" }}>
+            💡 POST /api/close → submitStrategy() → placeOrder() to IBKR TWS/Gateway
+          </div>
+        </div>
+
         {/* Action Buttons */}
         <div style={{
           padding: "16px 20px", borderTop: "1px solid rgba(255,255,255,0.08)",
@@ -1216,12 +1279,12 @@ function ActionConfirmModal({ action, onConfirm, onCancel }) {
                 padding: "10px 20px", fontSize: 13, fontWeight: 600,
                 background: "rgba(100,116,139,0.2)", color: "var(--text-secondary)",
                 border: "1px solid rgba(100,116,139,0.3)", borderRadius: 8, cursor: "pointer",
-              }} onClick={onCancel}>✗ Cancel</button>
+              }} onClick={onCancel}>✗ Cancel <span style={{ fontSize: 10, opacity: 0.6 }}>(Esc)</span></button>
               <button style={{
                 padding: "10px 24px", fontSize: 13, fontWeight: 700,
                 background: "var(--accent-green)", color: "#000",
                 border: "none", borderRadius: 8, cursor: "pointer",
-              }} onClick={handleConfirmFn}>✓ Confirm & Execute</button>
+              }} onClick={handleConfirmFn}>✓ Confirm & Execute <span style={{ fontSize: 10, opacity: 0.6 }}>(Enter)</span></button>
             </>
           )}
           {status === "submitting" && (
@@ -2800,19 +2863,7 @@ function PositionsTable({ positions }) {
                                   background: isRecommended ? `${act.color}15` : "rgba(255,255,255,0.03)",
                                   border: isRecommended ? `2px solid ${act.color}55` : "1px solid rgba(255,255,255,0.06)",
                                   transition: "all 0.15s",
-                                }} onClick={act.executable ? (e) => {
-                                  e.stopPropagation();
-                                  openActionModal({
-                                    name: act.name,
-                                    strategyName: `${sym} ${type.toUpperCase()} $${p.contract.strike}`,
-                                    legs: act.legs,
-                                    estimatedPnL: act.estimatedPnL,
-                                    reason: act.desc,
-                                    recommended: isRecommended,
-                                    tag: isRecommended ? rec.tag : null,
-                                    tagColor: act.color,
-                                  });
-                                } : undefined}>
+                                }} onClick={(e) => e.stopPropagation()}>
                                   <span style={{ fontSize: 18 }}>{act.icon}</span>
                                   <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontWeight: 700, fontSize: 12, color: act.color }}>
