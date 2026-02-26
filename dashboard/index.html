@@ -3034,9 +3034,11 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
   );
 }
 
-function PayoffChart({ strategies, selectedIdx }) {
+function PayoffChart({ strategies, selectedIdx, market }) {
   const s = strategies[selectedIdx];
   if (!s) return <div className="loading" style={{ fontSize: 12 }}>Select a strategy to see payoff</div>;
+
+  const currentPrice = market?.price || 0;
 
   // Generate payoff data from strategy
   const legs = s.legs || [];
@@ -3059,27 +3061,73 @@ function PayoffChart({ strategies, selectedIdx }) {
     points.push({ price: Math.round(price * 100) / 100, pnl: Math.round(pnl) });
   }
 
+  // Compute P&L at current price for the marker
+  let pnlAtCurrent = 0;
+  if (currentPrice > 0) {
+    for (const leg of legs) {
+      const dir = leg.side === "buy" ? 1 : -1;
+      const intrinsic = leg.type === "call"
+        ? Math.max(currentPrice - leg.strike, 0)
+        : Math.max(leg.strike - currentPrice, 0);
+      pnlAtCurrent += (intrinsic - (leg.price || 0)) * dir * (leg.quantity || 1) * 100;
+    }
+    pnlAtCurrent = Math.round(pnlAtCurrent);
+  }
+
+  // Breakeven
+  const breakevens = [];
+  for (let i = 1; i < points.length; i++) {
+    if ((points[i - 1].pnl <= 0 && points[i].pnl >= 0) || (points[i - 1].pnl >= 0 && points[i].pnl <= 0)) {
+      breakevens.push(points[i].price);
+    }
+  }
+
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={points} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-        <defs>
-          <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
-            <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
-          </linearGradient>
-        </defs>
-        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-        <XAxis dataKey="price" tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={(v) => "$" + v} />
-        <YAxis tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={(v) => v >= 0 ? "$" + v : "-$" + Math.abs(v)} />
-        <Tooltip
-          contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-          labelFormatter={(v) => "Price: $" + v}
-          formatter={(v) => [v >= 0 ? "$" + v : "-$" + Math.abs(v), "P&L"]}
-        />
-        <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
-        <Area type="monotone" dataKey="pnl" stroke="#3b82f6" strokeWidth={2} fill="url(#profitGrad)" />
-      </AreaChart>
-    </ResponsiveContainer>
+    <div>
+      {currentPrice > 0 && (
+        <div style={{ display: "flex", gap: 12, fontSize: 10, color: "var(--text-muted)", marginBottom: 6, flexWrap: "wrap" }}>
+          <span>Price: <b style={{ color: "var(--accent-amber)" }}>${currentPrice.toFixed(2)}</b>{market?.delayed && <span style={{ color: "#f59e0b", fontSize: 9, marginLeft: 4, padding: "1px 4px", background: "rgba(245,158,11,0.15)", borderRadius: 3 }}>DELAYED</span>}</span>
+          <span>P&L at Price: <b style={{ color: pnlAtCurrent >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{pnlAtCurrent >= 0 ? "+$" : "-$"}{Math.abs(pnlAtCurrent)}</b></span>
+          <span>Max Profit: <b style={{ color: "var(--accent-green)" }}>+${s.maxProfit}</b></span>
+          <span>Max Loss: <b style={{ color: "var(--accent-red)" }}>-${Math.abs(s.maxLoss)}</b></span>
+          {breakevens.map((be, i) => (
+            <span key={i}>BE: <b style={{ color: "var(--accent-amber)" }}>${be}</b></span>
+          ))}
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={220}>
+        <AreaChart data={points} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
+          <defs>
+            <linearGradient id="profitGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
+              <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+            </linearGradient>
+          </defs>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis dataKey="price" tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={(v) => "$" + v} />
+          <YAxis tick={{ fill: "#64748b", fontSize: 10 }} tickFormatter={(v) => v >= 0 ? "$" + v : "-$" + Math.abs(v)} />
+          <Tooltip
+            contentStyle={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+            labelFormatter={(v) => "Price: $" + v}
+            formatter={(v) => [v >= 0 ? "$" + v : "-$" + Math.abs(v), "P&L"]}
+          />
+          <ReferenceLine y={0} stroke="#475569" strokeDasharray="4 4" />
+          {/* P&L area */}
+          <Area type="monotone" dataKey="pnl" stroke="#3b82f6" strokeWidth={2} fill="url(#profitGrad)" />
+          {/* Current price marker — on top of Area */}
+          {currentPrice > 0 && (
+            <ReferenceLine x={Math.round(currentPrice * 100) / 100} stroke="#f59e0b" strokeWidth={3}
+              label={{ value: `📍 $${currentPrice.toFixed(2)}${market?.delayed ? " (D)" : ""} | P&L: ${pnlAtCurrent >= 0 ? "+$" : "-$"}${Math.abs(pnlAtCurrent)}`,
+                position: "top", fill: "#f59e0b", fontSize: 11, fontWeight: 700 }} />
+          )}
+          {/* Dot on the curve at current price */}
+          {currentPrice > 0 && (() => {
+            const nearest = points.reduce((best, p) => Math.abs(p.price - currentPrice) < Math.abs(best.price - currentPrice) ? p : best, points[0]);
+            return <ReferenceDot x={nearest.price} y={nearest.pnl} r={6} fill="#f59e0b" stroke="#fff" strokeWidth={2} />;
+          })()}
+        </AreaChart>
+      </ResponsiveContainer>
+    </div>
   );
 }
 
@@ -4637,9 +4685,11 @@ function App() {
               </strong>
             </div>
             {recommendations?.market?.dataSource && (
-              <div className={`data-source-badge ${recommendations.market.dataSource === "yahoo" ? "data-source-live" : "data-source-demo"}`} style={{ marginLeft: "auto" }}>
+              <div className={`data-source-badge ${["ibkr", "ibkr-delayed", "yahoo", "portfolio"].includes(recommendations.market.dataSource) ? "data-source-live" : "data-source-demo"}`} style={{ marginLeft: "auto" }}>
                 <div style={{ width: 5, height: 5, borderRadius: "50%", background: "currentColor" }} />
-                {recommendations.market.dataSource === "yahoo" ? "Yahoo Finance"
+                {recommendations.market.dataSource === "ibkr" ? "IBKR Real-Time"
+                  : recommendations.market.dataSource === "ibkr-delayed" ? "IBKR Delayed"
+                  : recommendations.market.dataSource === "yahoo" ? "Yahoo Finance"
                   : recommendations.market.dataSource === "portfolio" ? "IBKR Portfolio"
                   : "Synthetic"}
               </div>
@@ -4669,7 +4719,7 @@ function App() {
               <div>
                 <div className="card" style={{ marginBottom: 16 }}>
                   <div className="card-title">Payoff at Expiration</div>
-                  <PayoffChart strategies={strategies} selectedIdx={selectedStrategy} />
+                  <PayoffChart strategies={strategies} selectedIdx={selectedStrategy} market={recommendations?.market} />
                 </div>
                 {strategies[selectedStrategy]?.factors?.length > 0 && (
                   <div className="card">

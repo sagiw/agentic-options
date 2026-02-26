@@ -263,6 +263,7 @@ app.get("/api/recommendations", async (req, res) => {
           ivRank: analysis.ivRank,
           hv30: analysis.hv30,
           dataSource: analysis.dataSource,
+          delayed: analysis.priceDelayed || false,
         },
         isLive: ibkr.isConnected,
       },
@@ -1192,6 +1193,7 @@ interface GoalParams {
 interface AnalysisResult {
   underlyingPrice: number;
   dataSource: string;
+  priceDelayed: boolean;
   ivRank: number;
   hv30: number;
   chain: any[];
@@ -1208,28 +1210,49 @@ async function runAnalysis(
   if (quant.status === "idle") await quant.initialize();
 
   // ── Step 1: Get real price for the symbol ──────────────────
-  // Priority: IBKR position → Yahoo Finance → hardcoded fallback
+  // Priority: IBKR real-time quote → IBKR position → Yahoo Finance → fallback
   let underlyingPrice = 0;
   let ivRank = 50;
   let realHV = 0.3;
   let dataSource = "fallback";
+  let priceDelayed = false;
 
-  // Try portfolio positions first
-  for (const pos of portfolio.positions) {
-    if (
-      pos.contract.symbol === symbol &&
-      pos.contract.type === "stock" &&
-      pos.quantity > 0 &&
-      pos.marketValue > 0
-    ) {
-      underlyingPrice = pos.marketValue / pos.quantity;
-      dataSource = "portfolio";
-      log.info(`Price for ${symbol}: $${underlyingPrice.toFixed(2)} (from portfolio)`);
-      break;
+  // 1. Try IBKR real-time quote (best source — uses the paid subscription)
+  if (ibkr.isConnected) {
+    try {
+      const quote = await ibkr.getStockQuote(symbol);
+      if (quote) {
+        const price = quote.last || quote.close || ((quote.bid + quote.ask) / 2);
+        if (price > 0) {
+          underlyingPrice = Math.round(price * 100) / 100;
+          dataSource = quote.delayed ? "ibkr-delayed" : "ibkr";
+          priceDelayed = quote.delayed;
+          log.info(`Price for ${symbol}: $${underlyingPrice.toFixed(2)} (from IBKR${quote.delayed ? " DELAYED" : ""} — bid=${quote.bid} ask=${quote.ask} last=${quote.last})`);
+        }
+      }
+    } catch (err) {
+      log.warn(`IBKR quote failed for ${symbol}: ${err}`);
     }
   }
 
-  // If no portfolio price, try Yahoo Finance (free, no API key)
+  // 2. Try portfolio positions
+  if (underlyingPrice <= 0) {
+    for (const pos of portfolio.positions) {
+      if (
+        pos.contract.symbol === symbol &&
+        pos.contract.type === "stock" &&
+        pos.quantity > 0 &&
+        pos.marketValue > 0
+      ) {
+        underlyingPrice = pos.marketValue / pos.quantity;
+        dataSource = "portfolio";
+        log.info(`Price for ${symbol}: $${underlyingPrice.toFixed(2)} (from portfolio)`);
+        break;
+      }
+    }
+  }
+
+  // 3. Try Yahoo Finance (free, no API key)
   if (underlyingPrice <= 0) {
     log.info(`Fetching real market data for ${symbol} from Yahoo Finance...`);
     const snapshot = await getMarketSnapshot(symbol);
@@ -1245,11 +1268,23 @@ async function runAnalysis(
     }
   }
 
-  // Absolute fallback (should rarely happen)
+  // 4. Absolute fallback (should rarely happen)
   if (underlyingPrice <= 0) {
     underlyingPrice = 100;
     log.warn(`No market data for ${symbol} — using $100 fallback`);
     dataSource = "fallback";
+  }
+
+  // If we got price from IBKR but not IV/HV, supplement from Yahoo
+  if (dataSource.startsWith("ibkr") || dataSource === "portfolio") {
+    try {
+      const snapshot = await getMarketSnapshot(symbol);
+      if (snapshot) {
+        ivRank = snapshot.ivRank;
+        realHV = snapshot.hv30;
+        log.info(`IV/HV for ${symbol}: IV Rank=${ivRank}, HV30=${(realHV * 100).toFixed(1)}% (from Yahoo supplement)`);
+      }
+    } catch {}
   }
 
   // Run quant analysis via the agent's message protocol
@@ -1346,6 +1381,7 @@ async function runAnalysis(
   return {
     underlyingPrice,
     dataSource,
+    priceDelayed,
     ivRank,
     hv30: realHV,
     chain: [],
