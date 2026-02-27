@@ -18,6 +18,7 @@
 import type { StrategyFactor } from "../types/agents.js";
 import type { OptionsStrategy } from "../types/options.js";
 import type { Greeks } from "../types/options.js";
+import { getTechnicalAlignmentScore, type TechnicalAnalysis } from "../quant/technical-analysis.js";
 
 /** Full SHAP-like analysis result */
 export interface SHAPAnalysis {
@@ -39,7 +40,7 @@ export function computeSHAPFactors(
   underlyingPrice: number,
   ivRank: number,
   newsSentiment: number = 0,
-  technicalScore: number = 50
+  technicalAnalysis?: TechnicalAnalysis | null
 ): SHAPAnalysis {
   // Baseline score (mean of all strategies in the universe)
   const baselineScore = 50;
@@ -111,7 +112,10 @@ export function computeSHAPFactors(
     contribution: sentimentAlign * 8,
   });
 
-  // ── 7. Technical Score ────────────────────────────────────
+  // ── 7. Technical Analysis ────────────────────────────────
+  const technicalScore = technicalAnalysis
+    ? getTechnicalAlignmentScore(strategy.type, technicalAnalysis, underlyingPrice)
+    : 50;
   factors.push({
     name: "Technical Analysis",
     value: technicalScore,

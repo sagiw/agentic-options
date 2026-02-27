@@ -3189,6 +3189,93 @@ function ManualLegPanel({ legs, strategyName }) {
   );
 }
 
+function MarketAnalysisPanel({ technical, price }) {
+  if (!technical) return null;
+  const trendIcon = technical.trend === "bullish" ? "📈" : technical.trend === "bearish" ? "📉" : "➡️";
+  const trendColor = technical.trend === "bullish" ? "var(--accent-green)" : technical.trend === "bearish" ? "var(--accent-red)" : "var(--accent-amber)";
+  const bullishCount = (technical.signals || []).filter(s => s.direction === "bullish").length;
+  const bearishCount = (technical.signals || []).filter(s => s.direction === "bearish").length;
+  const totalSignals = (technical.signals || []).length;
+
+  const rsiColor = technical.rsi14 > 70 ? "var(--accent-red)" : technical.rsi14 < 30 ? "var(--accent-green)" : "var(--text-primary)";
+  const rsiLabel = technical.rsi14 > 70 ? "Overbought" : technical.rsi14 < 30 ? "Oversold" : technical.rsi14 > 60 ? "Bullish" : technical.rsi14 < 40 ? "Bearish" : "Neutral";
+
+  return (
+    <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+        <span style={{ fontSize: 18 }}>{trendIcon}</span>
+        <span style={{ color: trendColor, fontWeight: 700, fontSize: 15, textTransform: "uppercase" }}>{technical.trend} Trend</span>
+        <div style={{ background: "var(--bg)", borderRadius: 6, height: 8, flex: 1, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${technical.trendStrength || 50}%`, background: trendColor, borderRadius: 6, transition: "width 0.4s ease" }} />
+        </div>
+        <span style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 600 }}>{(technical.trendStrength || 50).toFixed(0)}%</span>
+        <span style={{ fontSize: 11, color: "var(--text-muted)", marginLeft: 8 }}>{bullishCount}/{totalSignals} bullish</span>
+      </div>
+
+      {/* Indicators grid */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 12 }}>
+        <div style={{ background: "var(--bg)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>RSI(14)</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: rsiColor }}>{technical.rsi14.toFixed(1)}</div>
+          <div style={{ fontSize: 10, color: rsiColor }}>{rsiLabel}</div>
+        </div>
+        <div style={{ background: "var(--bg)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>SMA(20)</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: price > technical.sma20 ? "var(--accent-green)" : "var(--accent-red)" }}>${technical.sma20.toFixed(2)}</div>
+          <div style={{ fontSize: 10, color: price > technical.sma20 ? "var(--accent-green)" : "var(--accent-red)" }}>{price > technical.sma20 ? "Above ↑" : "Below ↓"}</div>
+        </div>
+        <div style={{ background: "var(--bg)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>SMA(50)</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: price > technical.sma50 ? "var(--accent-green)" : "var(--accent-red)" }}>${technical.sma50.toFixed(2)}</div>
+          <div style={{ fontSize: 10, color: price > technical.sma50 ? "var(--accent-green)" : "var(--accent-red)" }}>{price > technical.sma50 ? "Above ↑" : "Below ↓"}</div>
+        </div>
+        <div style={{ background: "var(--bg)", borderRadius: 8, padding: "8px 10px" }}>
+          <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 3 }}>MACD</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: technical.macdHistogram > 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{technical.macdHistogram > 0 ? "+" : ""}{technical.macdHistogram.toFixed(3)}</div>
+          <div style={{ fontSize: 10, color: technical.macdHistogram > 0 ? "var(--accent-green)" : "var(--accent-red)" }}>{technical.macdHistogram > 0 ? "Bullish" : "Bearish"}</div>
+        </div>
+      </div>
+
+      {/* Support / Resistance levels */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        {technical.supports && technical.supports.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 10, color: "var(--text-muted)" }}>Support:</span>
+            {technical.supports.slice(0, 3).map((s, i) => (
+              <span key={i} style={{ background: "rgba(16,185,129,0.12)", color: "var(--accent-green)", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4 }}>${s.toFixed(2)}</span>
+            ))}
+          </div>
+        )}
+        {technical.resistances && technical.resistances.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 10, color: "var(--text-muted)" }}>Resistance:</span>
+            {technical.resistances.slice(0, 3).map((r, i) => (
+              <span key={i} style={{ background: "rgba(239,68,68,0.12)", color: "var(--accent-red)", fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 4 }}>${r.toFixed(2)}</span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Signals summary */}
+      {technical.signals && technical.signals.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {technical.signals.map((sig, i) => {
+            const sigColor = sig.direction === "bullish" ? "var(--accent-green)" : sig.direction === "bearish" ? "var(--accent-red)" : "var(--text-muted)";
+            const sigBg = sig.direction === "bullish" ? "rgba(16,185,129,0.08)" : sig.direction === "bearish" ? "rgba(239,68,68,0.08)" : "rgba(148,163,184,0.06)";
+            const sigIcon = sig.direction === "bullish" ? "▲" : sig.direction === "bearish" ? "▼" : "●";
+            return (
+              <div key={i} title={sig.reasoning} style={{ background: sigBg, border: `1px solid ${sigColor}22`, borderRadius: 6, padding: "3px 8px", fontSize: 10, color: sigColor, cursor: "help", display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{ fontSize: 8 }}>{sigIcon}</span>
+                {sig.name}: {sig.value}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
   const [showManual, setShowManual] = useState(false);
   const s = strategy;
@@ -3287,6 +3374,20 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
           </div>
         ))}
       </div>
+      {/* Strategy Explanation */}
+      {s.explanation && s.explanation !== s.name && (
+        <div style={{ background: "var(--bg)", borderRadius: 8, padding: "8px 12px", marginTop: 8, fontSize: 11, lineHeight: 1.5 }}>
+          {s.explanation.split("\n").map((line, li) => {
+            const color = line.includes("✅") ? "var(--accent-green)"
+              : line.includes("⚠️") ? "var(--accent-amber)"
+              : line.includes("📈") ? "var(--accent-green)"
+              : line.includes("📉") ? "var(--accent-red)"
+              : line.includes("➡️") ? "var(--accent-amber)"
+              : "var(--text-muted)";
+            return <div key={li} style={{ color, marginBottom: 2 }}>{line}</div>;
+          })}
+        </div>
+      )}
       {selected && (
         <div>
           {s.factors?.length > 0 && (
@@ -4985,6 +5086,11 @@ function App() {
               </div>
             );
           })()}
+
+          {/* ── Market Analysis Panel — technical indicators ── */}
+          {recommendations?.market?.technical && (
+            <MarketAnalysisPanel technical={recommendations.market.technical} price={recommendations.market.price} />
+          )}
 
           {/* Account bar — when no analysis yet */}
           {!recommendations?.market && (

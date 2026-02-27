@@ -23,6 +23,7 @@ import { calculateGreeks } from "./greeks.js";
 import { calculateLambda } from "./lambda.js";
 import { roundToTickSize } from "../utils/tick-size.js";
 import { estimateMargin } from "../utils/margin.js";
+import { getTechnicalAlignmentScore, type TechnicalAnalysis } from "./technical-analysis.js";
 
 /** Determine account tier */
 export function getAccountTier(netLiquidation: number): AccountTier {
@@ -293,51 +294,51 @@ export function buildCashSecuredPut(
 export function scoreStrategy(
   strategy: OptionsStrategy,
   underlyingPrice: number,
-  ivRank: number
+  ivRank: number,
+  technicalAnalysis?: TechnicalAnalysis | null
 ): { score: number; factors: StrategyFactor[] } {
   const factors: StrategyFactor[] = [];
 
-  // 1. Risk/Reward ratio (higher is better)
+  // 1. Risk/Reward ratio (higher is better) — weight 22%
   const maxProfitNum = strategy.maxProfit === "unlimited" ? Math.abs(strategy.maxLoss) * 3 : strategy.maxProfit;
   const maxLossAbs = Math.abs(strategy.maxLoss);
   const riskReward = maxLossAbs > 0 ? maxProfitNum / maxLossAbs : 0;
   factors.push({
     name: "Risk/Reward Ratio",
     value: riskReward,
-    weight: 0.25,
-    contribution: Math.min(riskReward / 3, 1) * 25,
+    weight: 0.22,
+    contribution: Math.min(riskReward / 3, 1) * 22,
   });
 
-  // 2. Capital efficiency (lower required capital = better for small accounts)
+  // 2. Capital efficiency — weight 18%
   const capitalEfficiency = maxProfitNum / Math.max(strategy.requiredCapital, 1);
   factors.push({
     name: "Capital Efficiency",
     value: capitalEfficiency,
-    weight: 0.2,
-    contribution: Math.min(capitalEfficiency, 1) * 20,
+    weight: 0.18,
+    contribution: Math.min(capitalEfficiency, 1) * 18,
   });
 
-  // 3. IV Rank alignment (sell strategies better in high IV, buy in low IV)
+  // 3. IV Rank alignment — weight 18%
   const isCreditStrategy = strategy.netDebit < 0;
   const ivAlignment = isCreditStrategy ? ivRank / 100 : (100 - ivRank) / 100;
   factors.push({
     name: "IV Rank Alignment",
     value: ivAlignment,
-    weight: 0.2,
-    contribution: ivAlignment * 20,
+    weight: 0.18,
+    contribution: ivAlignment * 18,
   });
 
-  // 4. Defined risk bonus (strategies with defined max loss score higher)
+  // 4. Defined risk bonus — weight 13%
   const definedRisk = strategy.maxLoss < strategy.requiredCapital * 0.5 ? 1 : 0.5;
   factors.push({
     name: "Defined Risk",
     value: definedRisk,
-    weight: 0.15,
-    contribution: definedRisk * 15,
+    weight: 0.13,
+    contribution: definedRisk * 13,
   });
 
-  // 5. DTE sweet spot: 30-45 days is optimal for theta decay.
-  //    Score peaks at 37 DTE and drops off as we move away.
+  // 5. DTE sweet spot — weight 17%
   const now = Date.now();
   const legDTEs = strategy.legs
     .map((l) => {
@@ -349,15 +350,25 @@ export function scoreStrategy(
     ? legDTEs.reduce((a, b) => a + b, 0) / legDTEs.length
     : 30;
 
-  // Bell curve centered at 37 DTE, with reasonable falloff
   const idealDTE = 37;
   const dteDeviation = Math.abs(avgDTE - idealDTE) / idealDTE;
-  const dteFit = Math.max(0, 1 - dteDeviation); // 0-1 scale
+  const dteFit = Math.max(0, 1 - dteDeviation);
   factors.push({
     name: "DTE Sweet Spot",
     value: avgDTE,
-    weight: 0.2,
-    contribution: dteFit * 20,
+    weight: 0.17,
+    contribution: dteFit * 17,
+  });
+
+  // 6. Technical Alignment — weight 12%
+  const techScore = technicalAnalysis
+    ? getTechnicalAlignmentScore(strategy.type, technicalAnalysis, underlyingPrice)
+    : 50; // neutral if no data
+  factors.push({
+    name: "Technical Alignment",
+    value: techScore,
+    weight: 0.12,
+    contribution: ((techScore - 50) / 50) * 12, // centered: 50→0, 100→+12, 0→-12
   });
 
   const score = factors.reduce((sum, f) => sum + f.contribution, 0);

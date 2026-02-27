@@ -10,6 +10,7 @@
  */
 
 import { agentLogger } from "../../utils/logger.js";
+import { computeTechnicalAnalysis, type TechnicalAnalysis } from "../../quant/technical-analysis.js";
 
 const log = agentLogger("yahoo");
 
@@ -202,6 +203,102 @@ export async function getMarketSnapshot(symbol: string): Promise<{
     changePct: quote.changePct,
     volume: quote.volume,
   };
+}
+
+// ── Market Context (volatility + technical analysis) ─────────
+
+const contextCache: Map<string, { data: MarketContext; expiry: number }> = new Map();
+const CONTEXT_CACHE_TTL = 300_000; // 5 minutes
+
+export interface MarketContext {
+  volatility: VolatilityData;
+  technical: TechnicalAnalysis;
+  closes: number[];
+}
+
+/**
+ * Get combined volatility + technical analysis for a symbol.
+ * Reuses Yahoo 1-year daily data to compute RSI, SMA, MACD, S/R, trend.
+ */
+export async function getMarketContext(symbol: string): Promise<MarketContext | null> {
+  // Check cache
+  const cached = contextCache.get(symbol);
+  if (cached && Date.now() < cached.expiry) return cached.data;
+
+  try {
+    // Fetch 1 year of daily data (same as getVolatilityData)
+    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=1y`;
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+
+    if (!res.ok) return null;
+
+    const json = (await res.json()) as any;
+    const result = json?.chart?.result?.[0];
+    if (!result?.indicators?.quote?.[0]) return null;
+
+    const closes: number[] = result.indicators.quote[0].close?.filter(
+      (c: number | null) => c != null && c > 0
+    ) ?? [];
+
+    if (closes.length < 60) {
+      log.warn(`Not enough data for ${symbol} market context (${closes.length} bars)`);
+      return null;
+    }
+
+    // Compute volatility (same logic as getVolatilityData)
+    const returns: number[] = [];
+    for (let i = 1; i < closes.length; i++) {
+      returns.push(Math.log(closes[i] / closes[i - 1]));
+    }
+
+    const recent30 = returns.slice(-30);
+    const hv30 = stdDev(recent30) * Math.sqrt(252);
+    const recent60 = returns.slice(-60);
+    const hv60 = stdDev(recent60) * Math.sqrt(252);
+
+    const rollingHVs: number[] = [];
+    for (let i = 30; i <= returns.length; i++) {
+      const window = returns.slice(i - 30, i);
+      rollingHVs.push(stdDev(window) * Math.sqrt(252));
+    }
+
+    const minHV = Math.min(...rollingHVs);
+    const maxHV = Math.max(...rollingHVs);
+    const ivRank =
+      maxHV > minHV ? ((hv30 - minHV) / (maxHV - minHV)) * 100 : 50;
+
+    const avgDailyMove =
+      returns.slice(-30).reduce((s, r) => s + Math.abs(r), 0) / 30 * 100;
+
+    const volatility: VolatilityData = {
+      hv30,
+      hv60,
+      ivRank: Math.round(Math.max(0, Math.min(100, ivRank))),
+      avgDailyMove,
+    };
+
+    // Compute technical analysis
+    const technical = computeTechnicalAnalysis(closes);
+    if (!technical) {
+      log.warn(`Technical analysis failed for ${symbol}`);
+      return null;
+    }
+
+    const data: MarketContext = { volatility, technical, closes };
+    contextCache.set(symbol, { data, expiry: Date.now() + CONTEXT_CACHE_TTL });
+
+    log.info(
+      `Market context for ${symbol}: trend=${technical.trend} (${technical.trendStrength.toFixed(0)}%), ` +
+      `RSI=${technical.rsi14.toFixed(1)}, supports=${technical.supports.length}, resistances=${technical.resistances.length}`
+    );
+
+    return data;
+  } catch (err) {
+    log.error(`Market context fetch failed for ${symbol}`, { error: String(err) });
+    return null;
+  }
 }
 
 // ── Utility ─────────────────────────────────────────────────

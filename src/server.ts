@@ -29,7 +29,8 @@ import { calculateLambda } from "./quant/lambda.js";
 import { blackScholesPrice, type BSParams } from "./quant/black-scholes.js";
 import { config } from "./config/index.js";
 import { logger, agentLogger } from "./utils/logger.js";
-import { getMarketSnapshot } from "./api/market-data/yahoo.js";
+import { getMarketSnapshot, getMarketContext } from "./api/market-data/yahoo.js";
+import { generateTechnicalExplanation, type TechnicalAnalysis } from "./quant/technical-analysis.js";
 import { submitStrategy, type SubmitResult } from "./api/ibkr/orders.js";
 import { estimateMargin, checkMarginAvailability } from "./utils/margin.js";
 import { loadSettings, saveSettings } from "./storage/settings.js";
@@ -244,7 +245,13 @@ app.get("/api/recommendations", async (req, res) => {
             price: l.price,
           })),
           factors: s.factors,
-          explanation: s.strategy.name,
+          explanation: generateTechnicalExplanation(
+            s.strategy.type,
+            s.strategy.name,
+            analysis.technicalAnalysis,
+            analysis.ivRank,
+            analysis.underlyingPrice
+          ),
           approved: s.approved,
         }; }),
         account: {
@@ -264,6 +271,23 @@ app.get("/api/recommendations", async (req, res) => {
           hv30: analysis.hv30,
           dataSource: analysis.dataSource,
           delayed: analysis.priceDelayed || false,
+          technical: analysis.technicalAnalysis ? {
+            trend: analysis.technicalAnalysis.trend,
+            trendStrength: analysis.technicalAnalysis.trendStrength,
+            rsi14: analysis.technicalAnalysis.rsi14,
+            sma20: analysis.technicalAnalysis.sma20,
+            sma50: analysis.technicalAnalysis.sma50,
+            sma200: analysis.technicalAnalysis.sma200,
+            macd: analysis.technicalAnalysis.macd,
+            macdSignal: analysis.technicalAnalysis.macdSignal,
+            macdHistogram: analysis.technicalAnalysis.macdHistogram,
+            bollingerUpper: analysis.technicalAnalysis.bollingerUpper,
+            bollingerLower: analysis.technicalAnalysis.bollingerLower,
+            bollingerMid: analysis.technicalAnalysis.bollingerMid,
+            supports: analysis.technicalAnalysis.supports,
+            resistances: analysis.technicalAnalysis.resistances,
+            signals: analysis.technicalAnalysis.signals,
+          } : null,
         },
         isLive: ibkr.isConnected,
       },
@@ -1199,6 +1223,7 @@ interface AnalysisResult {
   chain: any[];
   strategies: RankedStrategy[];
   lambdaCurve: any[];
+  technicalAnalysis?: TechnicalAnalysis | null;
 }
 
 async function runAnalysis(
@@ -1286,6 +1311,28 @@ async function runAnalysis(
     } catch {}
   }
 
+  // ── Fetch technical analysis data ──────────────────────────
+  let technicalAnalysis: TechnicalAnalysis | null = null;
+  try {
+    const context = await getMarketContext(symbol);
+    if (context) {
+      technicalAnalysis = context.technical;
+      // Also update IV/HV if we didn't have them yet
+      if (ivRank === 50 && dataSource === "fallback") {
+        ivRank = context.volatility.ivRank;
+        realHV = context.volatility.hv30;
+      }
+      log.info(
+        `Technical for ${symbol}: trend=${technicalAnalysis.trend} ` +
+        `(strength ${technicalAnalysis.trendStrength.toFixed(0)}%), ` +
+        `RSI=${technicalAnalysis.rsi14.toFixed(1)}, ` +
+        `S/R=${technicalAnalysis.supports.length}/${technicalAnalysis.resistances.length}`
+      );
+    }
+  } catch (err) {
+    log.warn(`Technical analysis failed for ${symbol}: ${err}`);
+  }
+
   // Run quant analysis via the agent's message protocol
   const result = await quant.handleMessage({
     id: "analysis-" + Date.now(),
@@ -1369,13 +1416,16 @@ async function runAnalysis(
     );
   }
 
-  // Generate explanation cards for top strategies using real IV rank
-  for (const s of strategies.slice(0, 5)) {
+  // Generate explanation cards for top strategies using real IV rank + technical analysis
+  for (const s of strategies.slice(0, 10)) {
     const greeks = { delta: 0.5, gamma: 0.02, theta: -0.05, vega: 0.3, rho: 0.1 };
-    const shap = computeSHAPFactors(s.strategy, greeks, underlyingPrice, ivRank);
+    const shap = computeSHAPFactors(s.strategy, greeks, underlyingPrice, ivRank, 0, technicalAnalysis);
     s.factors = shap.factors;
     s.score = shap.finalScore;
   }
+
+  // Re-sort after SHAP re-scoring
+  strategies.sort((a, b) => b.score - a.score);
 
   return {
     underlyingPrice,
@@ -1386,6 +1436,7 @@ async function runAnalysis(
     chain: [],
     strategies,
     lambdaCurve: [],
+    technicalAnalysis,
   };
 }
 
