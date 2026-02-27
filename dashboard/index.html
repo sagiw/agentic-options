@@ -4207,6 +4207,247 @@ function OrdersTab({ orders }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  JOURNAL TAB — Trade Journal & Performance
+// ═══════════════════════════════════════════════════════════
+
+function JournalTab() {
+  const [journalData, setJournalData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [portfolioAnalysis, setPortfolioAnalysis] = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/journal").then((r) => r.json()),
+      fetch("/api/portfolio-analysis").then((r) => r.json()),
+    ])
+      .then(([journal, portfolio]) => {
+        if (journal.success) setJournalData(journal.data);
+        if (portfolio.success) setPortfolioAnalysis(portfolio.data);
+      })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="loading">
+        <div className="spinner" />
+        <div>Loading trade journal...</div>
+      </div>
+    );
+  }
+
+  const summary = journalData || { totalTrades: 0, closedTrades: 0, overallWinRate: 0, totalPnL: 0, avgPnLPerTrade: 0, byStrategy: [], recentTrades: [] };
+
+  return (
+    <div>
+      {/* Summary Cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 12, marginBottom: 16 }}>
+        <div className="card" style={{ padding: "12px 16px", textAlign: "center" }}>
+          <div className="metric-label">Total Trades</div>
+          <div style={{ fontSize: 28, fontWeight: 700 }}>{summary.totalTrades}</div>
+        </div>
+        <div className="card" style={{ padding: "12px 16px", textAlign: "center" }}>
+          <div className="metric-label">Closed</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: "var(--accent-blue)" }}>{summary.closedTrades}</div>
+        </div>
+        <div className="card" style={{ padding: "12px 16px", textAlign: "center" }}>
+          <div className="metric-label">Win Rate</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: summary.overallWinRate >= 50 ? "var(--accent-green)" : "var(--accent-red)" }}>
+            {summary.overallWinRate}%
+          </div>
+        </div>
+        <div className="card" style={{ padding: "12px 16px", textAlign: "center" }}>
+          <div className="metric-label">Total P&L</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: summary.totalPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+            {fmt.usd(summary.totalPnL)}
+          </div>
+        </div>
+        <div className="card" style={{ padding: "12px 16px", textAlign: "center" }}>
+          <div className="metric-label">Avg P&L/Trade</div>
+          <div style={{ fontSize: 28, fontWeight: 700, color: summary.avgPnLPerTrade >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+            {fmt.usd(summary.avgPnLPerTrade)}
+          </div>
+        </div>
+      </div>
+
+      <div className="main-grid">
+        {/* Performance by Strategy */}
+        <div className="card">
+          <div className="card-title">Performance by Strategy</div>
+          {summary.byStrategy.length === 0 ? (
+            <div style={{ color: "var(--text-muted)", textAlign: "center", padding: 20 }}>
+              No closed trades yet. Trades will appear here after you approve and close strategies.
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                    <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-muted)" }}>Strategy</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px", color: "var(--text-muted)" }}>Trades</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px", color: "var(--text-muted)" }}>Win Rate</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--text-muted)" }}>Total P&L</th>
+                    <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--text-muted)" }}>Avg P&L</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px", color: "var(--text-muted)" }}>Avg Days</th>
+                    <th style={{ textAlign: "center", padding: "6px 8px", color: "var(--text-muted)" }}>Score Adj</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {summary.byStrategy.map((perf) => (
+                    <tr key={perf.strategyType} style={{ borderBottom: "1px solid var(--border)" }}>
+                      <td style={{ padding: "8px", fontWeight: 600 }}>{perf.strategyType.replace(/_/g, " ")}</td>
+                      <td style={{ textAlign: "center", padding: "8px" }}>{perf.totalTrades}</td>
+                      <td style={{ textAlign: "center", padding: "8px" }}>
+                        <span style={{
+                          padding: "2px 8px",
+                          borderRadius: 10,
+                          fontSize: 11,
+                          fontWeight: 700,
+                          background: perf.winRate >= 60 ? "rgba(0,200,100,0.15)" : perf.winRate >= 40 ? "rgba(255,200,0,0.15)" : "rgba(255,100,100,0.15)",
+                          color: perf.winRate >= 60 ? "var(--accent-green)" : perf.winRate >= 40 ? "var(--accent-amber)" : "var(--accent-red)",
+                        }}>
+                          {perf.winRate}%
+                        </span>
+                      </td>
+                      <td style={{ textAlign: "right", padding: "8px", color: perf.totalPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                        {fmt.usd(perf.totalPnL)}
+                      </td>
+                      <td style={{ textAlign: "right", padding: "8px", color: perf.avgPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                        {fmt.usd(perf.avgPnL)}
+                      </td>
+                      <td style={{ textAlign: "center", padding: "8px" }}>{perf.avgHoldingDays}</td>
+                      <td style={{ textAlign: "center", padding: "8px" }}>
+                        <span style={{ color: perf.scoreAdjustment > 0 ? "var(--accent-green)" : perf.scoreAdjustment < 0 ? "var(--accent-red)" : "var(--text-muted)" }}>
+                          {perf.scoreAdjustment > 0 ? "+" : ""}{perf.scoreAdjustment}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        {/* Portfolio Heat Map */}
+        <div className="card">
+          <div className="card-title">Portfolio Heat Map</div>
+          {portfolioAnalysis ? (
+            <div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 16 }}>
+                {Object.entries(portfolioAnalysis.concentrationBySymbol || {}).sort((a, b) => b[1] - a[1]).map(([sym, pct]) => {
+                  const delta = (portfolioAnalysis.deltaBySymbol || {})[sym] || 0;
+                  const size = Math.max(60, Math.min(120, pct * 6));
+                  const isOverweight = pct > 20;
+                  return (
+                    <div key={sym} style={{
+                      width: size,
+                      height: size,
+                      borderRadius: 8,
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      background: isOverweight
+                        ? "linear-gradient(135deg, rgba(255,100,100,0.2), rgba(255,50,50,0.1))"
+                        : delta > 0
+                        ? "linear-gradient(135deg, rgba(0,200,100,0.15), rgba(0,150,80,0.05))"
+                        : "linear-gradient(135deg, rgba(255,100,100,0.15), rgba(200,50,50,0.05))",
+                      border: isOverweight ? "2px solid rgba(255,100,100,0.4)" : "1px solid var(--border)",
+                      cursor: "default",
+                      transition: "transform 0.2s",
+                    }}
+                    title={`${sym}: ${pct.toFixed(1)}% of portfolio, delta: ${delta.toFixed(1)}`}>
+                      <div style={{ fontWeight: 700, fontSize: size > 80 ? 14 : 11 }}>{sym}</div>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)" }}>{pct.toFixed(1)}%</div>
+                      <div style={{
+                        fontSize: 9,
+                        color: delta > 0 ? "var(--accent-green)" : "var(--accent-red)",
+                      }}>Δ{delta.toFixed(1)}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                <b>Correlation Risk:</b>{" "}
+                <span style={{
+                  color: portfolioAnalysis.correlationRisk > 60 ? "var(--accent-red)" : portfolioAnalysis.correlationRisk > 30 ? "var(--accent-amber)" : "var(--accent-green)"
+                }}>
+                  {portfolioAnalysis.correlationRisk?.toFixed(0) ?? 0}/100
+                </span>
+                {" | "}
+                <b>Unique Underlyings:</b> {portfolioAnalysis.uniqueUnderlyings ?? 0}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: "var(--text-muted)", textAlign: "center", padding: 20 }}>
+              No portfolio data available
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Recent Trades */}
+      {summary.recentTrades.length > 0 && (
+        <div className="card" style={{ marginTop: 16 }}>
+          <div className="card-title">Recent Trades</div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-muted)" }}>Date</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-muted)" }}>Symbol</th>
+                  <th style={{ textAlign: "left", padding: "6px 8px", color: "var(--text-muted)" }}>Strategy</th>
+                  <th style={{ textAlign: "center", padding: "6px 8px", color: "var(--text-muted)" }}>Outcome</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--text-muted)" }}>P&L</th>
+                  <th style={{ textAlign: "right", padding: "6px 8px", color: "var(--text-muted)" }}>P&L %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.recentTrades.map((trade) => (
+                  <tr key={trade.id} style={{ borderBottom: "1px solid var(--border)" }}>
+                    <td style={{ padding: "6px 8px" }}>{trade.entryDate}</td>
+                    <td style={{ padding: "6px 8px", fontWeight: 600 }}>{trade.symbol}</td>
+                    <td style={{ padding: "6px 8px" }}>{trade.strategyType?.replace(/_/g, " ")}</td>
+                    <td style={{ textAlign: "center", padding: "6px 8px" }}>
+                      <span style={{
+                        padding: "2px 8px",
+                        borderRadius: 10,
+                        fontSize: 10,
+                        fontWeight: 700,
+                        background: trade.outcome === "win" ? "rgba(0,200,100,0.15)" : trade.outcome === "loss" ? "rgba(255,100,100,0.15)" : "rgba(255,200,0,0.15)",
+                        color: trade.outcome === "win" ? "var(--accent-green)" : trade.outcome === "loss" ? "var(--accent-red)" : "var(--accent-amber)",
+                      }}>
+                        {trade.outcome?.toUpperCase() || "OPEN"}
+                      </span>
+                    </td>
+                    <td style={{
+                      textAlign: "right",
+                      padding: "6px 8px",
+                      color: (trade.actualPnL || 0) >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                    }}>
+                      {trade.actualPnL != null ? fmt.usd(trade.actualPnL) : "—"}
+                    </td>
+                    <td style={{
+                      textAlign: "right",
+                      padding: "6px 8px",
+                      color: (trade.pnlPct || 0) >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                    }}>
+                      {trade.pnlPct != null ? `${trade.pnlPct.toFixed(1)}%` : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 //  MAIN APP
 // ═══════════════════════════════════════════════════════════
 
@@ -4529,12 +4770,13 @@ function App() {
 
       {/* Tabs */}
       <div className="tabs">
-        {["portfolio", "analysis", "chain", "orders", "risk"].map((tab) => (
+        {["portfolio", "analysis", "chain", "orders", "journal", "risk"].map((tab) => (
           <button key={tab} className={`tab ${activeTab === tab ? "active" : ""}`}
             onClick={() => setActiveTab(tab)}>
             {tab === "portfolio" ? "Portfolio"
               : tab === "analysis" ? "Strategy Analysis"
               : tab === "chain" ? "Option Chain"
+              : tab === "journal" ? "Trade Journal"
               : tab === "orders" ? <>Orders
                   {orders.length > 0 && (
                     <span className={`tab-badge ${activeTab === "orders" ? "tab-badge-active" : "tab-badge-idle"}`}>
@@ -5092,6 +5334,135 @@ function App() {
             <MarketAnalysisPanel technical={recommendations.market.technical} price={recommendations.market.price} />
           )}
 
+          {/* ── Portfolio Context & Earnings ── */}
+          {(recommendations?.portfolio || recommendations?.earnings) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+              {/* Portfolio Context */}
+              {recommendations?.portfolio && (
+                <div className="card" style={{ padding: "12px 16px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-purple)", marginBottom: 8 }}>
+                    📊 Portfolio Context
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "4px 16px", fontSize: 11 }}>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Net Delta: </span>
+                      <b style={{ color: Math.abs(recommendations.portfolio.totalDelta) > 50 ? "var(--accent-red)" : "var(--text-primary)" }}>
+                        {recommendations.portfolio.totalDelta?.toFixed(1) ?? "0"}
+                      </b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>β-Weighted: </span>
+                      <b>{recommendations.portfolio.betaWeightedDelta?.toFixed(1) ?? "0"}</b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Daily Θ: </span>
+                      <b style={{ color: recommendations.portfolio.totalTheta > 0 ? "var(--accent-green)" : "var(--accent-red)" }}>
+                        ${recommendations.portfolio.totalTheta?.toFixed(2) ?? "0"}
+                      </b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Vega: </span>
+                      <b>{recommendations.portfolio.totalVega?.toFixed(2) ?? "0"}</b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Underlyings: </span>
+                      <b>{recommendations.portfolio.uniqueUnderlyings ?? 0}</b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Max Conc: </span>
+                      <b style={{ color: (recommendations.portfolio.maxConcentration || 0) > 20 ? "var(--accent-red)" : "var(--text-primary)" }}>
+                        {(recommendations.portfolio.maxConcentration || 0).toFixed(1)}%
+                      </b>
+                    </div>
+                    <div>
+                      <span style={{ color: "var(--text-muted)" }}>Corr Risk: </span>
+                      <b style={{ color: (recommendations.portfolio.correlationRisk || 0) > 60 ? "var(--accent-amber)" : "var(--text-primary)" }}>
+                        {(recommendations.portfolio.correlationRisk || 0).toFixed(0)}/100
+                      </b>
+                    </div>
+                    {recommendations.portfolio.coveredCallCandidates?.length > 0 && (
+                      <div style={{ gridColumn: "1 / -1" }}>
+                        <span style={{ color: "var(--text-muted)" }}>CC Candidates: </span>
+                        <b style={{ color: "var(--accent-green)" }}>
+                          {recommendations.portfolio.coveredCallCandidates.join(", ")}
+                        </b>
+                      </div>
+                    )}
+                  </div>
+                  {recommendations.portfolio.adjustments?.length > 0 && (
+                    <div style={{ marginTop: 8, borderTop: "1px solid var(--border)", paddingTop: 6 }}>
+                      {recommendations.portfolio.adjustments.slice(0, 3).map((adj, i) => (
+                        <div key={i} style={{
+                          fontSize: 10,
+                          color: adj.priority === "high" ? "var(--accent-red)" : adj.priority === "medium" ? "var(--accent-amber)" : "var(--text-muted)",
+                          marginBottom: 2,
+                        }}>
+                          {adj.priority === "high" ? "🔴" : adj.priority === "medium" ? "🟡" : "🟢"} {adj.message}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Earnings & Events */}
+              {recommendations?.earnings && (
+                <div className="card" style={{ padding: "12px 16px" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "var(--accent-amber)", marginBottom: 8 }}>
+                    📅 Events & Earnings
+                  </div>
+                  <div style={{ fontSize: 11 }}>
+                    {recommendations.earnings.earningsDate ? (
+                      <div style={{
+                        marginBottom: 6,
+                        padding: "6px 10px",
+                        borderRadius: 6,
+                        background: recommendations.earnings.isEarningsDangerZone
+                          ? "rgba(255,100,100,0.15)"
+                          : "rgba(255,255,255,0.03)",
+                        border: recommendations.earnings.isEarningsDangerZone
+                          ? "1px solid rgba(255,100,100,0.3)"
+                          : "1px solid var(--border)",
+                      }}>
+                        <div>
+                          <span style={{ color: "var(--text-muted)" }}>Next Earnings: </span>
+                          <b style={{ color: recommendations.earnings.isEarningsDangerZone ? "var(--accent-red)" : "var(--text-primary)" }}>
+                            {recommendations.earnings.earningsDate}
+                          </b>
+                          {recommendations.earnings.daysUntilEarnings !== null && (
+                            <span style={{ color: "var(--text-muted)", marginLeft: 8 }}>
+                              ({recommendations.earnings.daysUntilEarnings}d away)
+                            </span>
+                          )}
+                        </div>
+                        {recommendations.earnings.isEarningsDangerZone && (
+                          <div style={{ color: "var(--accent-red)", marginTop: 4, fontWeight: 600, fontSize: 10 }}>
+                            ⚠️ EARNINGS DANGER ZONE — Credit strategies filtered out
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div style={{ color: "var(--text-muted)", marginBottom: 6 }}>
+                        No upcoming earnings date found
+                      </div>
+                    )}
+                    {recommendations.earnings.exDividendDate && (
+                      <div style={{ marginBottom: 4 }}>
+                        <span style={{ color: "var(--text-muted)" }}>Ex-Dividend: </span>
+                        <b>{recommendations.earnings.exDividendDate}</b>
+                        {recommendations.earnings.daysUntilExDiv !== null && recommendations.earnings.daysUntilExDiv >= 0 && (
+                          <span style={{ color: recommendations.earnings.daysUntilExDiv <= 7 ? "var(--accent-amber)" : "var(--text-muted)", marginLeft: 8 }}>
+                            ({recommendations.earnings.daysUntilExDiv}d away)
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Account bar — when no analysis yet */}
           {!recommendations?.market && (
             <div className="analysis-account-bar">
@@ -5155,6 +5526,11 @@ function App() {
       {/* ── Orders Tab ─────────────────────────────── */}
       {activeTab === "orders" && (
         <OrdersTab orders={orders} />
+      )}
+
+      {/* ── Journal Tab ────────────────────────────── */}
+      {activeTab === "journal" && (
+        <JournalTab />
       )}
 
       {/* ── Risk Tab ──────────────────────────────── */}

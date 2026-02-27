@@ -24,6 +24,17 @@ import { calculateLambda } from "./lambda.js";
 import { roundToTickSize } from "../utils/tick-size.js";
 import { estimateMargin } from "../utils/margin.js";
 import { getTechnicalAlignmentScore, type TechnicalAnalysis } from "./technical-analysis.js";
+import {
+  buildPutCreditSpread,
+  buildCallCreditSpread,
+  buildIronButterfly,
+  buildLongStraddle,
+  buildLongStrangle,
+  buildCoveredCall,
+  buildCalendarSpread,
+  buildDiagonalSpread,
+} from "./strategy-builders.js";
+import { calculatePOP, calculateEV, type POPResult, type EVResult } from "./scoring.js";
 
 /** Determine account tier */
 export function getAccountTier(netLiquidation: number): AccountTier {
@@ -37,6 +48,8 @@ export function allowedStrategies(tier: AccountTier): StrategyType[] {
   const base: StrategyType[] = [
     "bull_call_spread",
     "bear_put_spread",
+    "put_credit_spread",
+    "call_credit_spread",
     "iron_condor",
     "iron_butterfly",
   ];
@@ -296,49 +309,49 @@ export function scoreStrategy(
   underlyingPrice: number,
   ivRank: number,
   technicalAnalysis?: TechnicalAnalysis | null
-): { score: number; factors: StrategyFactor[] } {
+): { score: number; factors: StrategyFactor[]; pop?: POPResult; ev?: EVResult } {
   const factors: StrategyFactor[] = [];
 
-  // 1. Risk/Reward ratio (higher is better) — weight 22%
+  // 1. Risk/Reward ratio (higher is better) — weight 18%
   const maxProfitNum = strategy.maxProfit === "unlimited" ? Math.abs(strategy.maxLoss) * 3 : strategy.maxProfit;
   const maxLossAbs = Math.abs(strategy.maxLoss);
   const riskReward = maxLossAbs > 0 ? maxProfitNum / maxLossAbs : 0;
   factors.push({
     name: "Risk/Reward Ratio",
     value: riskReward,
-    weight: 0.22,
-    contribution: Math.min(riskReward / 3, 1) * 22,
+    weight: 0.18,
+    contribution: Math.min(riskReward / 3, 1) * 18,
   });
 
-  // 2. Capital efficiency — weight 18%
+  // 2. Capital efficiency — weight 15%
   const capitalEfficiency = maxProfitNum / Math.max(strategy.requiredCapital, 1);
   factors.push({
     name: "Capital Efficiency",
     value: capitalEfficiency,
-    weight: 0.18,
-    contribution: Math.min(capitalEfficiency, 1) * 18,
+    weight: 0.15,
+    contribution: Math.min(capitalEfficiency, 1) * 15,
   });
 
-  // 3. IV Rank alignment — weight 18%
+  // 3. IV Rank alignment — weight 15%
   const isCreditStrategy = strategy.netDebit < 0;
   const ivAlignment = isCreditStrategy ? ivRank / 100 : (100 - ivRank) / 100;
   factors.push({
     name: "IV Rank Alignment",
     value: ivAlignment,
-    weight: 0.18,
-    contribution: ivAlignment * 18,
+    weight: 0.15,
+    contribution: ivAlignment * 15,
   });
 
-  // 4. Defined risk bonus — weight 13%
+  // 4. Defined risk bonus — weight 10%
   const definedRisk = strategy.maxLoss < strategy.requiredCapital * 0.5 ? 1 : 0.5;
   factors.push({
     name: "Defined Risk",
     value: definedRisk,
-    weight: 0.13,
-    contribution: definedRisk * 13,
+    weight: 0.10,
+    contribution: definedRisk * 10,
   });
 
-  // 5. DTE sweet spot — weight 17%
+  // 5. DTE sweet spot — weight 12%
   const now = Date.now();
   const legDTEs = strategy.legs
     .map((l) => {
@@ -356,23 +369,41 @@ export function scoreStrategy(
   factors.push({
     name: "DTE Sweet Spot",
     value: avgDTE,
-    weight: 0.17,
-    contribution: dteFit * 17,
+    weight: 0.12,
+    contribution: dteFit * 12,
   });
 
-  // 6. Technical Alignment — weight 12%
+  // 6. Technical Alignment — weight 10%
   const techScore = technicalAnalysis
     ? getTechnicalAlignmentScore(strategy.type, technicalAnalysis, underlyingPrice)
     : 50; // neutral if no data
   factors.push({
     name: "Technical Alignment",
     value: techScore,
-    weight: 0.12,
-    contribution: ((techScore - 50) / 50) * 12, // centered: 50→0, 100→+12, 0→-12
+    weight: 0.10,
+    contribution: ((techScore - 50) / 50) * 10, // centered: 50→0, 100→+10, 0→-10
+  });
+
+  // 7. Probability of Profit (POP) — weight 10%
+  const popResult = calculatePOP(strategy, underlyingPrice);
+  factors.push({
+    name: "Probability of Profit",
+    value: popResult.pop,
+    weight: 0.10,
+    contribution: (popResult.pop - 0.5) * 20, // 50% POP → 0, 70% → +4, 30% → -4
+  });
+
+  // 8. Expected Value — weight 5%
+  const evResult = calculateEV(strategy, popResult.pop);
+  factors.push({
+    name: "Expected Value",
+    value: evResult.evPerDollarRisked,
+    weight: 0.05,
+    contribution: evResult.isPositiveEV ? Math.min(evResult.evPerDollarRisked * 10, 5) : -3,
   });
 
   const score = factors.reduce((sum, f) => sum + f.contribution, 0);
-  return { score, factors };
+  return { score, factors, pop: popResult, ev: evResult };
 }
 
 /**
@@ -384,11 +415,17 @@ export function findStrategies(
   chain: OptionChainEntry[],
   account: AccountSummary,
   ivRank: number,
-  expirations: Date[]
+  expirations: Date[],
+  options?: {
+    technicalAnalysis?: TechnicalAnalysis | null;
+    hasShares?: boolean;
+    farExpirations?: Date[];
+  }
 ): RankedStrategy[] {
   const tier = getAccountTier(account.netLiquidation);
   const allowed = allowedStrategies(tier);
   const results: RankedStrategy[] = [];
+  const hasShares = options?.hasShares ?? false;
 
   for (const expiration of expirations) {
     const builders: Array<{
@@ -404,14 +441,56 @@ export function findStrategies(
         build: () => buildBearPutSpread(underlying, underlyingPrice, chain, expiration),
       },
       {
+        type: "put_credit_spread",
+        build: () => buildPutCreditSpread(underlying, underlyingPrice, chain, expiration),
+      },
+      {
+        type: "call_credit_spread",
+        build: () => buildCallCreditSpread(underlying, underlyingPrice, chain, expiration),
+      },
+      {
         type: "iron_condor",
         build: () => buildIronCondor(underlying, underlyingPrice, chain, expiration),
+      },
+      {
+        type: "iron_butterfly",
+        build: () => buildIronButterfly(underlying, underlyingPrice, chain, expiration),
       },
       {
         type: "cash_secured_put",
         build: () => buildCashSecuredPut(underlying, underlyingPrice, chain, expiration),
       },
+      {
+        type: "straddle",
+        build: () => buildLongStraddle(underlying, underlyingPrice, chain, expiration),
+      },
+      {
+        type: "strangle",
+        build: () => buildLongStrangle(underlying, underlyingPrice, chain, expiration),
+      },
+      {
+        type: "covered_call",
+        build: () => buildCoveredCall(underlying, underlyingPrice, chain, expiration, hasShares),
+      },
     ];
+
+    // Calendar and diagonal spreads need a far expiration
+    const farExps = options?.farExpirations ?? expirations.filter(
+      (e) => e.getTime() > expiration.getTime() + 14 * 24 * 60 * 60 * 1000
+    );
+    if (farExps.length > 0) {
+      const farExp = farExps[0];
+      builders.push(
+        {
+          type: "calendar_spread",
+          build: () => buildCalendarSpread(underlying, underlyingPrice, chain, expiration, farExp),
+        },
+        {
+          type: "diagonal_spread",
+          build: () => buildDiagonalSpread(underlying, underlyingPrice, chain, expiration, farExp),
+        },
+      );
+    }
 
     for (const builder of builders) {
       if (!allowed.includes(builder.type)) continue;
@@ -428,7 +507,9 @@ export function findStrategies(
       // Also skip if theoretical capital exceeds available funds
       if (strategy.requiredCapital > account.availableFunds) continue;
 
-      const { score, factors } = scoreStrategy(strategy, underlyingPrice, ivRank);
+      const { score, factors } = scoreStrategy(
+        strategy, underlyingPrice, ivRank, options?.technicalAnalysis
+      );
 
       results.push({
         strategy,

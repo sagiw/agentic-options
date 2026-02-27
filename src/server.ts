@@ -34,6 +34,26 @@ import { generateTechnicalExplanation, type TechnicalAnalysis } from "./quant/te
 import { submitStrategy, type SubmitResult } from "./api/ibkr/orders.js";
 import { estimateMargin, checkMarginAvailability } from "./utils/margin.js";
 import { loadSettings, saveSettings } from "./storage/settings.js";
+import {
+  analyzePortfolio,
+  getPortfolioAdjustments,
+  checkStrategyFit,
+  kellyPositionSize,
+  computeCorrelationRisk,
+  formatPortfolioSummary,
+  type PortfolioContext,
+} from "./quant/portfolio-analysis.js";
+import { calculatePOP, calculateEV, scoreLiquidity, analyzeIVSkew } from "./quant/scoring.js";
+import { getEarningsInfo, evaluateEventRisk, passesEventFilter } from "./quant/earnings-calendar.js";
+import {
+  loadJournal,
+  recordTradeEntry,
+  recordTradeExit,
+  getJournalSummary,
+  getStrategyPerformance,
+  getDynamicScoreAdjustment,
+  getOpenTrades,
+} from "./quant/trade-journal.js";
 import type { OrderStatusUpdate } from "./api/ibkr/portfolio-sync.js";
 import type { Portfolio, AccountSummary } from "./types/portfolio.js";
 import type { RankedStrategy } from "./types/agents.js";
@@ -290,6 +310,18 @@ app.get("/api/recommendations", async (req, res) => {
           } : null,
         },
         isLive: ibkr.isConnected,
+        portfolio: {
+          totalDelta: analysis.portfolioContext?.totalDelta ?? 0,
+          totalTheta: analysis.portfolioContext?.totalTheta ?? 0,
+          totalVega: analysis.portfolioContext?.totalVega ?? 0,
+          betaWeightedDelta: analysis.portfolioContext?.betaWeightedDelta ?? 0,
+          coveredCallCandidates: analysis.portfolioContext?.coveredCallCandidates ?? [],
+          maxConcentration: analysis.portfolioContext?.maxConcentration ?? 0,
+          uniqueUnderlyings: analysis.portfolioContext?.uniqueUnderlyings ?? 0,
+          correlationRisk: analysis.correlationRisk ?? 0,
+          adjustments: analysis.portfolioAdjustments ?? [],
+        },
+        earnings: analysis.earningsInfo,
       },
     });
   } catch (err) {
@@ -1197,6 +1229,104 @@ app.get("/api/portfolio-plan", async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════════════
+//  TRADE JOURNAL & PORTFOLIO ANALYSIS ENDPOINTS
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * GET /api/journal — Trade journal summary with performance stats
+ */
+app.get("/api/journal", (_req, res) => {
+  try {
+    const summary = getJournalSummary();
+    res.json({ success: true, data: summary });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * GET /api/journal/performance — Performance by strategy type
+ */
+app.get("/api/journal/performance", (req, res) => {
+  try {
+    const strategyType = (req.query.type as string) || undefined;
+    const perf = getStrategyPerformance(strategyType);
+    res.json({ success: true, data: perf });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * POST /api/journal/entry — Record a new trade entry
+ */
+app.post("/api/journal/entry", (req, res) => {
+  try {
+    const record = recordTradeEntry(req.body);
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * POST /api/journal/exit — Record a trade exit
+ */
+app.post("/api/journal/exit", (req, res) => {
+  try {
+    const { tradeId, exitPrice, exitDate } = req.body;
+    const record = recordTradeExit(tradeId, exitPrice, exitDate);
+    if (!record) {
+      return res.status(404).json({ success: false, error: "Trade not found" });
+    }
+    res.json({ success: true, data: record });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * GET /api/portfolio-analysis — Detailed portfolio context with greeks, concentration, adjustments
+ */
+app.get("/api/portfolio-analysis", async (_req, res) => {
+  try {
+    const portfolio = await refreshPortfolio();
+    const ctx = analyzePortfolio(portfolio);
+    const adjustments = getPortfolioAdjustments(ctx);
+    const corrRisk = computeCorrelationRisk(ctx);
+    const summary = formatPortfolioSummary(ctx);
+
+    const deltaBySymbol: Record<string, number> = {};
+    for (const [k, v] of ctx.deltaBySymbol) deltaBySymbol[k] = v;
+    const exposureBySymbol: Record<string, number> = {};
+    for (const [k, v] of ctx.exposureBySymbol) exposureBySymbol[k] = v;
+    const concentrationBySymbol: Record<string, number> = {};
+    for (const [k, v] of ctx.concentrationBySymbol) concentrationBySymbol[k] = v;
+
+    res.json({
+      success: true,
+      data: {
+        deltaBySymbol,
+        totalDelta: ctx.totalDelta,
+        totalTheta: ctx.totalTheta,
+        totalVega: ctx.totalVega,
+        betaWeightedDelta: ctx.betaWeightedDelta,
+        exposureBySymbol,
+        concentrationBySymbol,
+        coveredCallCandidates: ctx.coveredCallCandidates,
+        maxConcentration: ctx.maxConcentration,
+        uniqueUnderlyings: ctx.uniqueUnderlyings,
+        correlationRisk: corrRisk,
+        adjustments,
+        summary,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
 // ── Serve React Dashboard ───────────────────────────────────
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "..", "dashboard", "index.html"));
@@ -1224,6 +1354,23 @@ interface AnalysisResult {
   strategies: RankedStrategy[];
   lambdaCurve: any[];
   technicalAnalysis?: TechnicalAnalysis | null;
+  portfolioContext?: PortfolioContext | null;
+  earningsInfo?: {
+    earningsDate: string | null;
+    daysUntilEarnings: number | null;
+    isEarningsDangerZone: boolean;
+    exDividendDate: string | null;
+    daysUntilExDiv: number | null;
+  } | null;
+  ivSkew?: {
+    direction: string;
+    magnitude: number;
+    atmIV: number;
+    skewRatio: number;
+    suggestion: string;
+  } | null;
+  portfolioAdjustments?: any[];
+  correlationRisk?: number;
 }
 
 async function runAnalysis(
@@ -1333,6 +1480,32 @@ async function runAnalysis(
     log.warn(`Technical analysis failed for ${symbol}: ${err}`);
   }
 
+  // ── Fetch earnings / event data ─────────────────────────────
+  let earningsInfo = null;
+  let eventRisk = null;
+  try {
+    const rawEarnings = await getEarningsInfo(symbol);
+    earningsInfo = {
+      earningsDate: rawEarnings.earningsDate?.toISOString().split("T")[0] ?? null,
+      daysUntilEarnings: rawEarnings.daysUntilEarnings,
+      isEarningsDangerZone: rawEarnings.isEarningsDangerZone,
+      exDividendDate: rawEarnings.exDividendDate?.toISOString().split("T")[0] ?? null,
+      daysUntilExDiv: rawEarnings.daysUntilExDiv,
+    };
+    eventRisk = evaluateEventRisk(rawEarnings);
+    if (eventRisk.score > 0) {
+      log.info(`Event risk for ${symbol}: score=${eventRisk.score}, factors=[${eventRisk.factors.join("; ")}]`);
+    }
+  } catch (err) {
+    log.warn(`Earnings fetch failed for ${symbol}: ${err}`);
+  }
+
+  // ── Portfolio context ─────────────────────────────────────
+  const portfolioCtx = analyzePortfolio(portfolio);
+  const portfolioAdjustments = getPortfolioAdjustments(portfolioCtx);
+  const correlationRisk = computeCorrelationRisk(portfolioCtx);
+  const hasShares = portfolioCtx.coveredCallCandidates.includes(symbol);
+
   // Run quant analysis via the agent's message protocol
   const result = await quant.handleMessage({
     id: "analysis-" + Date.now(),
@@ -1416,6 +1589,29 @@ async function runAnalysis(
     );
   }
 
+  // ── Event-based filtering (earnings, ex-dividend) ──────────
+  if (eventRisk && eventRisk.score > 0) {
+    const beforeCount = strategies.length;
+    strategies = strategies.filter((s) => passesEventFilter(s.strategy.type, eventRisk!));
+    const filtered = beforeCount - strategies.length;
+    if (filtered > 0) {
+      log.info(`Event filter removed ${filtered} strategies (${eventRisk.factors.join("; ")})`);
+    }
+  }
+
+  // ── Portfolio-aware scoring adjustment ────────────────────
+  for (const s of strategies) {
+    const fit = checkStrategyFit(s.strategy, portfolioCtx, portfolio.account.netLiquidation);
+    if (!fit.allowed) {
+      s.score -= 100; // effectively removes it
+    } else {
+      s.score += fit.adjustedScore;
+    }
+  }
+  // Remove strategies that were blocked by portfolio constraints
+  strategies = strategies.filter((s) => s.score > -50);
+  strategies.sort((a, b) => b.score - a.score);
+
   // Generate explanation cards for top strategies using real IV rank + technical analysis
   for (const s of strategies.slice(0, 10)) {
     const greeks = { delta: 0.5, gamma: 0.02, theta: -0.05, vega: 0.3, rho: 0.1 };
@@ -1437,6 +1633,10 @@ async function runAnalysis(
     strategies,
     lambdaCurve: [],
     technicalAnalysis,
+    portfolioContext: portfolioCtx,
+    earningsInfo,
+    portfolioAdjustments,
+    correlationRisk,
   };
 }
 

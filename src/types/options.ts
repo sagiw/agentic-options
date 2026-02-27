@@ -99,12 +99,16 @@ export type StrategyType =
   | "cash_secured_put"
   | "bull_call_spread"
   | "bear_put_spread"
+  | "put_credit_spread"
+  | "call_credit_spread"
   | "iron_condor"
   | "iron_butterfly"
   | "straddle"
   | "strangle"
   | "calendar_spread"
   | "diagonal_spread"
+  | "jade_lizard"
+  | "broken_wing_butterfly"
   | "wheel";
 
 /** Order to be submitted to brokerage */

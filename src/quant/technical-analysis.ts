@@ -400,6 +400,7 @@ export function getTrendAnalysis(
 const BULLISH_STRATEGIES: StrategyType[] = [
   "long_call",
   "bull_call_spread",
+  "put_credit_spread",
   "cash_secured_put",
   "covered_call",
   "wheel",
@@ -408,6 +409,7 @@ const BULLISH_STRATEGIES: StrategyType[] = [
 const BEARISH_STRATEGIES: StrategyType[] = [
   "long_put",
   "bear_put_spread",
+  "call_credit_spread",
 ];
 
 const NEUTRAL_STRATEGIES: StrategyType[] = [
@@ -417,6 +419,8 @@ const NEUTRAL_STRATEGIES: StrategyType[] = [
   "strangle",
   "calendar_spread",
   "diagonal_spread",
+  "jade_lizard",
+  "broken_wing_butterfly",
 ];
 
 export function isBullishStrategy(type: StrategyType): boolean {
