@@ -218,12 +218,14 @@ app.get("/api/recommendations", async (req, res) => {
     const symbol = (req.query.symbol as string)?.toUpperCase() ?? "AAPL";
 
     // Parse goal parameters
-    const goalParams = {
+    const profitPrefRaw = (req.query.profitPreference as string) || "any";
+    const goalParams: GoalParams = {
       monthlyTarget: parseFloat(req.query.monthlyTarget as string) || 0,
       maxRiskPct: parseFloat(req.query.maxRiskPct as string) || 2,
       minDTE: parseInt(req.query.minDTE as string, 10) || 14,
       maxDTE: parseInt(req.query.maxDTE as string, 10) || 60,
       allowedStrategies: (req.query.strategies as string)?.split(",").filter(Boolean) || [],
+      profitPreference: (profitPrefRaw === "credit" || profitPrefRaw === "debit") ? profitPrefRaw : "any",
     };
 
     const analysis = await runAnalysis(symbol, portfolio, goalParams);
@@ -1177,12 +1179,14 @@ app.get("/api/portfolio-plan", async (req, res) => {
       return res.status(400).json({ success: false, error: "No symbols provided" });
     }
 
+    const profitPref2 = (req.query.profitPreference as string) || "any";
     const goalParams: GoalParams = {
       monthlyTarget: parseFloat(req.query.monthlyTarget as string) || 1000,
       maxRiskPct: parseFloat(req.query.maxRiskPct as string) || 2,
       minDTE: parseInt(req.query.minDTE as string, 10) || 14,
       maxDTE: parseInt(req.query.maxDTE as string, 10) || 60,
       allowedStrategies: (req.query.strategies as string)?.split(",").filter(Boolean) || [],
+      profitPreference: (profitPref2 === "credit" || profitPref2 === "debit") ? profitPref2 : "any",
     };
 
     const netLiq = portfolio.account.netLiquidation || 50_000;
@@ -1490,6 +1494,7 @@ interface GoalParams {
   minDTE: number;
   maxDTE: number;
   allowedStrategies: string[];
+  profitPreference: "any" | "credit" | "debit";
 }
 
 interface AnalysisResult {
@@ -1711,6 +1716,13 @@ async function runAnalysis(
         if (goalParams.maxDTE > 0 && avgDTE > goalParams.maxDTE) return false;
       }
 
+      // Filter by profit preference (credit vs debit)
+      if (goalParams.profitPreference !== "any") {
+        const isCredit = s.strategy.netDebit < 0;
+        if (goalParams.profitPreference === "credit" && !isCredit) return false;
+        if (goalParams.profitPreference === "debit" && isCredit) return false;
+      }
+
       return true;
     });
 
@@ -1733,7 +1745,8 @@ async function runAnalysis(
     log.info(
       `Goal filtering: ${strategies.length} strategies after filter ` +
       `(target: $${goalParams.monthlyTarget}/mo, risk: ${goalParams.maxRiskPct}%, ` +
-      `DTE: ${goalParams.minDTE}-${goalParams.maxDTE}, types: ${goalParams.allowedStrategies.join(",")})`
+      `DTE: ${goalParams.minDTE}-${goalParams.maxDTE}, profit: ${goalParams.profitPreference}, ` +
+      `types: ${goalParams.allowedStrategies.join(",")})`
     );
   }
 

@@ -4822,6 +4822,7 @@ function App() {
     maxRiskPct: 2,
     minDTE: 14,
     maxDTE: 60,
+    profitPreference: "any", // "any" | "credit" | "debit"
     strategies: ["bull_call_spread", "bear_put_spread", "iron_condor", "cash_secured_put"],
     symbols: ["AAPL", "MSFT", "TSLA", "SPY"],
   });
@@ -4855,6 +4856,7 @@ function App() {
       maxRiskPct: String(goals.maxRiskPct),
       minDTE: String(goals.minDTE),
       maxDTE: String(goals.maxDTE),
+      profitPreference: goals.profitPreference,
       strategies: goals.strategies.join(","),
     });
     const r = await apiFetch(`/recommendations?${params}`);
@@ -4872,6 +4874,7 @@ function App() {
       maxRiskPct: String(goals.maxRiskPct),
       minDTE: String(goals.minDTE),
       maxDTE: String(goals.maxDTE),
+      profitPreference: goals.profitPreference,
       strategies: goals.strategies.join(","),
     });
     const data = await apiFetch(`/portfolio-plan?${params}`);
@@ -4996,7 +4999,11 @@ function App() {
       .then(r => r.json())
       .then(json => {
         if (json.success && json.data) {
-          setGoals(json.data);
+          setGoals((prev) => ({
+            ...prev,
+            ...json.data,
+            profitPreference: json.data.profitPreference || "any",
+          }));
           console.log("[Settings] Loaded from server:", JSON.stringify(json.data));
         }
       })
@@ -5167,7 +5174,7 @@ function App() {
                 <span style={{ fontSize: 16 }}>🎯</span>
                 Trading Goals
                 <span style={{ fontSize: 11, fontWeight: 400, color: "var(--text-muted)" }}>
-                  — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d | {goals.symbols.length} symbols
+                  — Target: ${goals.monthlyTarget.toLocaleString()}/mo | Risk: {goals.maxRiskPct}% | DTE: {goals.minDTE}-{goals.maxDTE}d | {goals.profitPreference === "credit" ? "💰 Credit" : goals.profitPreference === "debit" ? "🎯 Debit" : "All"} | {goals.symbols.length} symbols
                 </span>
               </div>
               {settingsSaveStatus && (
@@ -5206,6 +5213,43 @@ function App() {
                   <label>Max Days to Expiration</label>
                   <input type="number" value={goals.maxDTE} min={1} max={365} step={1}
                     onChange={(e) => setGoals({ ...goals, maxDTE: Number(e.target.value) || 60 })} />
+                </div>
+                <div className="goal-field" style={{ gridColumn: "1 / -1" }}>
+                  <label>Profit Preference — איך אתה רוצה להרוויח?</label>
+                  <div className="goal-strat-chips">
+                    {[
+                      { id: "any", label: "All / הכל", desc: "Show all strategies" },
+                      { id: "credit", label: "💰 Credit / פרמיה", desc: "Collect premium upfront — profit from time decay" },
+                      { id: "debit", label: "🎯 Debit / כיווני", desc: "Pay premium — profit from price movement" },
+                    ].map((opt) => (
+                      <button key={opt.id}
+                        className={`goal-chip ${goals.profitPreference === opt.id ? "active" : ""}`}
+                        style={{
+                          position: "relative",
+                          ...(goals.profitPreference === opt.id && opt.id === "credit"
+                            ? { borderColor: "var(--accent-green)", background: "rgba(16,185,129,0.12)", color: "var(--accent-green)" }
+                            : goals.profitPreference === opt.id && opt.id === "debit"
+                            ? { borderColor: "var(--accent-blue)", background: "rgba(59,130,246,0.12)", color: "var(--accent-blue)" }
+                            : {}),
+                        }}
+                        title={opt.desc}
+                        onClick={() => setGoals({ ...goals, profitPreference: opt.id })}>
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  {goals.profitPreference !== "any" && (
+                    <div style={{
+                      fontSize: 10, marginTop: 4, padding: "4px 8px", borderRadius: 6,
+                      background: goals.profitPreference === "credit" ? "rgba(16,185,129,0.06)" : "rgba(59,130,246,0.06)",
+                      color: goals.profitPreference === "credit" ? "var(--accent-green)" : "var(--accent-blue)",
+                      lineHeight: 1.5,
+                    }}>
+                      {goals.profitPreference === "credit"
+                        ? "🟢 יוצגו רק אסטרטגיות קרדיט — גביית פרמיה מראש, דעיכת זמן (Theta) עובדת לטובתך. מתאים למי שרוצה הכנסה שוטפת מעמלות."
+                        : "🔵 יוצגו רק אסטרטגיות דביט — תשלום פרמיה מראש, רווח מתנועת מחיר. מתאים למי שמוכן לשלם עמלות ולהרוויח מתנועה גדולה."}
+                    </div>
+                  )}
                 </div>
                 <div className="goal-field" style={{ gridColumn: "1 / -1" }}>
                   <label>Allowed Strategy Types</label>
