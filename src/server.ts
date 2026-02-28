@@ -60,6 +60,14 @@ import {
   type PositionMonitorResult,
   type ExitRuleConfig,
 } from "./quant/position-monitor.js";
+import {
+  loadExecutionCache,
+  mergeExecutions,
+  mergeCompletedOrders,
+  getCachedExecutions,
+  getCacheStats,
+  type CachedExecution,
+} from "./storage/execution-cache.js";
 import type { OrderStatusUpdate } from "./api/ibkr/portfolio-sync.js";
 import type { Portfolio, AccountSummary } from "./types/portfolio.js";
 import type { RankedStrategy } from "./types/agents.js";
@@ -67,6 +75,9 @@ import type { RankedStrategy } from "./types/agents.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const log = agentLogger("server");
 const app = express();
+
+// Load execution cache on startup
+loadExecutionCache();
 
 app.use(express.json());
 
@@ -1060,70 +1071,69 @@ app.get("/api/orders/verify", async (_req, res) => {
 });
 
 /**
- * GET /api/history — Trade execution history from IBKR with commissions and P&L.
+ * GET /api/history — Trade execution history with persistent local cache.
+ *
+ * Strategy:
+ *   1. Fetch fresh data from IBKR (reqExecutions + reqCompletedOrders) if connected
+ *   2. Merge new data into persistent local cache (data/execution-history.json)
+ *   3. Return from cache — this gives us full history across TWS restarts
  *
  * Query params:
- *   days — Number of days to look back (default: 30)
+ *   days — Number of days to look back (default: 30, max: 365)
  *
- * Returns execution details grouped by order, with commissions and realized P&L.
- * Falls back to locally tracked orders when IBKR is not connected.
+ * The cache grows over time: every execution we see from IBKR is saved locally,
+ * so even after TWS restarts we retain the full trade history.
  */
 app.get("/api/history", async (req, res) => {
   try {
-    const days = Math.min(parseInt(req.query.days as string) || 30, 90);
-    let executions: any[] = [];
-    let completedOrders: any[] = [];
-    let source = "local";
+    const days = Math.min(parseInt(req.query.days as string) || 30, 365);
+    let newExecCount = 0;
+    let newCompletedCount = 0;
 
-    // Try IBKR for real execution data
+    // ── Step 1: Fetch fresh data from IBKR and merge into cache ──
     if (ibkr.isConnected) {
-      // Fetch both data sources in parallel:
-      // 1. reqExecutions — today's fills with commissions & realized P&L (detailed per-fill)
-      // 2. reqCompletedOrders — filled/cancelled orders from recent days (broader history)
       const [execResult, completedResult] = await Promise.allSettled([
         ibkr.getExecutions(days),
-        ibkr.getCompletedOrders(false), // false = include both API and TWS orders
+        ibkr.getCompletedOrders(false),
       ]);
 
-      if (execResult.status === "fulfilled") {
-        executions = execResult.value;
-        source = "ibkr";
-        log.info(`History: ${executions.length} executions from reqExecutions`);
-      } else {
-        log.warn(`IBKR reqExecutions failed: ${execResult.reason}`);
+      if (execResult.status === "fulfilled" && execResult.value.length > 0) {
+        newExecCount = mergeExecutions(execResult.value);
+        log.info(`History: fetched ${execResult.value.length} executions, ${newExecCount} new`);
       }
 
-      if (completedResult.status === "fulfilled") {
-        completedOrders = completedResult.value;
-        source = "ibkr";
-        log.info(`History: ${completedOrders.length} completed orders from reqCompletedOrders`);
-      } else {
-        log.warn(`IBKR reqCompletedOrders failed: ${completedResult.reason}`);
+      if (completedResult.status === "fulfilled" && completedResult.value.length > 0) {
+        newCompletedCount = mergeCompletedOrders(completedResult.value);
+        log.info(`History: fetched ${completedResult.value.length} completed orders, ${newCompletedCount} new`);
       }
     }
 
-    // ── Group today's executions by orderId (detailed fills with commissions) ──
-    const orderMap = new Map<number, any>();
+    // ── Step 2: Read from cache (includes all historical data) ──
+    const cached = getCachedExecutions(days);
+    const cacheStats = getCacheStats();
+
+    // ── Step 3: Group cached executions by orderId for multi-leg display ──
+    const orderMap = new Map<string, any>();
     let totalCommissions = 0;
     let totalRealizedPnL = 0;
 
-    for (const exec of executions) {
+    for (const exec of cached) {
       totalCommissions += exec.commission || 0;
       totalRealizedPnL += exec.realizedPnL || 0;
 
-      const orderId = exec.orderId;
-      if (!orderMap.has(orderId)) {
-        orderMap.set(orderId, {
-          orderId,
+      const key = String(exec.orderId);
+      if (!orderMap.has(key)) {
+        orderMap.set(key, {
+          orderId: exec.orderId,
           symbol: exec.symbol,
           time: exec.time,
           legs: [],
           totalCommission: 0,
           totalRealizedPnL: 0,
-          source: "executions",
+          source: exec.source,
         });
       }
-      const order = orderMap.get(orderId)!;
+      const order = orderMap.get(key)!;
       order.legs.push({
         secType: exec.secType,
         strike: exec.strike,
@@ -1140,55 +1150,9 @@ app.get("/api/history", async (req, res) => {
       order.totalRealizedPnL += exec.realizedPnL || 0;
     }
 
-    // ── Process completed orders (historical, beyond today) ──
-    // Deduplicate: skip completed orders whose orderId/permId already appear in today's executions
-    const executionOrderIds = new Set(executions.map((e: any) => e.orderId));
-
-    const completedFormatted = completedOrders
-      .filter((co: any) => {
-        // Only show filled orders, skip cancelled
-        const status = (co.status || co.completedStatus || "").toLowerCase();
-        return status.includes("filled") || status.includes("fill");
-      })
-      .filter((co: any) => !executionOrderIds.has(co.orderId)) // deduplicate
-      .map((co: any) => {
-        // IBKR returns 1.7976931348623157e+308 for unknown commission/PnL — treat as 0
-        const comm = typeof co.commission === "number" && co.commission < 1e9 ? co.commission : 0;
-        const pnl = typeof co.realizedPnL === "number" && Math.abs(co.realizedPnL) < 1e9 ? co.realizedPnL : 0;
-        totalCommissions += comm;
-        totalRealizedPnL += pnl;
-
-        return {
-          orderId: co.orderId || co.permId,
-          permId: co.permId,
-          symbol: co.symbol,
-          time: co.completedTime || "",
-          action: co.action,
-          orderType: co.orderType,
-          status: co.status || co.completedStatus,
-          source: "completed",
-          legs: [{
-            secType: co.secType,
-            strike: co.strike,
-            right: co.right,
-            expiration: co.expiration,
-            side: co.action === "BUY" ? "BOT" : co.action === "SELL" ? "SLD" : co.action,
-            quantity: co.filledQuantity || co.totalQuantity,
-            price: co.avgFillPrice || co.lmtPrice,
-            exchange: co.exchange,
-            commission: comm,
-            realizedPnL: pnl,
-          }],
-          totalCommission: comm,
-          totalRealizedPnL: pnl,
-        };
-      });
-
-    // ── Merge both sources, sorted by time (newest first) ──
-    const allOrders = [
-      ...Array.from(orderMap.values()),
-      ...completedFormatted,
-    ].sort((a: any, b: any) => (b.time || "").localeCompare(a.time || ""));
+    const allOrders = Array.from(orderMap.values()).sort(
+      (a: any, b: any) => (b.time || "").localeCompare(a.time || "")
+    );
 
     // Also include tracked local orders for completeness
     const localOrders = trackedOrders
@@ -1214,14 +1178,18 @@ app.get("/api/history", async (req, res) => {
     res.json({
       success: true,
       data: {
-        source,
+        source: ibkr.isConnected ? "ibkr+cache" : "cache",
         daysBack: days,
         executions: allOrders,
-        completedOrderCount: completedFormatted.length,
-        todayExecutionCount: executions.length,
+        cache: {
+          totalCached: cacheStats.totalRecords,
+          oldestRecord: cacheStats.oldestRecord,
+          newestRecord: cacheStats.newestRecord,
+          newlyAdded: newExecCount + newCompletedCount,
+        },
         localOrders: localOrders.reverse(),
         summary: {
-          totalExecutions: executions.length + completedFormatted.length,
+          totalExecutions: cached.length,
           totalOrders: allOrders.length,
           totalLocalOrders: localOrders.length,
           totalCommissions: Math.round(totalCommissions * 100) / 100,

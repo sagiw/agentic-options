@@ -4579,7 +4579,7 @@ function HistoryTab() {
       <div style={{ display: "flex", gap: 12, marginBottom: 16, alignItems: "stretch" }}>
         <div className="card" style={{ padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
           <span style={{ color: "var(--text-muted)", fontSize: 12 }}>Period:</span>
-          {[7, 14, 30, 60].map((d) => (
+          {[7, 14, 30, 90, 365].map((d) => (
             <button key={d} onClick={() => setDays(d)}
               style={{
                 padding: "4px 12px", borderRadius: 6, border: "1px solid var(--border)",
@@ -4587,7 +4587,7 @@ function HistoryTab() {
                 color: days === d ? "#fff" : "var(--text-muted)",
                 cursor: "pointer", fontSize: 12, fontWeight: 600,
               }}>
-              {d}d
+              {d === 365 ? "1Y" : `${d}d`}
             </button>
           ))}
         </div>
@@ -4596,9 +4596,10 @@ function HistoryTab() {
           <div style={{ textAlign: "center" }}>
             <div className="metric-label">Total Trades</div>
             <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.totalOrders || 0}</div>
-            {(data.todayExecutionCount > 0 || data.completedOrderCount > 0) && (
+            {data.cache && (
               <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
-                {data.todayExecutionCount || 0} today · {data.completedOrderCount || 0} historical
+                {data.cache.totalCached || 0} in cache
+                {data.cache.newlyAdded > 0 && ` (+${data.cache.newlyAdded} new)`}
               </div>
             )}
           </div>
@@ -4642,15 +4643,13 @@ function HistoryTab() {
       {data.executions.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            IBKR Trade History ({data.executions.length} orders)
-            {data.todayExecutionCount > 0 && (
-              <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(56,189,248,0.15)", color: "var(--accent-blue)" }}>
-                {data.todayExecutionCount} today
-              </span>
-            )}
-            {data.completedOrderCount > 0 && (
+            Trade History ({data.executions.length} orders)
+            <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(56,189,248,0.15)", color: "var(--accent-blue)" }}>
+              {data.source === "ibkr+cache" ? "IBKR + Cache" : data.source === "cache" ? "Cached" : "Local"}
+            </span>
+            {data.cache?.totalCached > 0 && (
               <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(168,85,247,0.15)", color: "#a855f7" }}>
-                {data.completedOrderCount} historical
+                {data.cache.totalCached} total cached
               </span>
             )}
           </div>
