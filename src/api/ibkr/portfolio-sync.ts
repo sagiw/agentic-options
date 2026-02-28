@@ -1786,6 +1786,84 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     });
   }
 
+  /**
+   * Query IBKR for completed orders (filled/cancelled).
+   *
+   * Unlike reqExecutions (which only returns today's executions),
+   * reqCompletedOrders returns orders that have reached a terminal state
+   * (filled, cancelled) over recent days — typically up to a week.
+   *
+   * Each completed order includes full contract details, order parameters,
+   * fill price, quantity, and completion time/status.
+   *
+   * @param apiOnly - If true, only return orders placed via the API (not TWS manual orders)
+   * @returns Array of completed order records with contract, order, and state info
+   */
+  async getCompletedOrders(apiOnly: boolean = false): Promise<any[]> {
+    this.ensureConnected();
+    const EventNameRef = this.eventNameRef!;
+
+    return new Promise((resolve) => {
+      const orders: any[] = [];
+
+      const onCompletedOrder = (contract: any, order: any, orderState: any) => {
+        // Extract useful fields from the completed order
+        const isOption = contract?.secType === "OPT";
+        orders.push({
+          orderId: order?.orderId ?? order?.permId,
+          permId: order?.permId,
+          symbol: contract?.symbol,
+          secType: contract?.secType,
+          strike: isOption ? contract?.strike : undefined,
+          right: isOption ? contract?.right : undefined,
+          expiration: isOption ? contract?.lastTradeDateOrContractMonth : undefined,
+          exchange: contract?.exchange || contract?.primaryExch,
+          action: order?.action, // BUY or SELL
+          totalQuantity: order?.totalQuantity,
+          orderType: order?.orderType, // LMT, MKT, etc.
+          lmtPrice: order?.lmtPrice,
+          auxPrice: order?.auxPrice,
+          filledQuantity: order?.filledQuantity ?? order?.totalQuantity,
+          avgFillPrice: orderState?.avgFillPrice ?? order?.lmtPrice,
+          status: orderState?.status, // Filled, Cancelled, etc.
+          completedTime: orderState?.completedTime || order?.completedTime,
+          completedStatus: orderState?.completedStatus || orderState?.status,
+          commission: orderState?.commission ?? 0,
+          realizedPnL: orderState?.realizedPnL ?? 0,
+          // Combo legs for multi-leg orders
+          comboLegs: contract?.comboLegs?.map((leg: any) => ({
+            conId: leg.conId,
+            ratio: leg.ratio,
+            action: leg.action,
+            exchange: leg.exchange,
+          })) || [],
+        });
+      };
+
+      const onCompletedOrdersEnd = () => {
+        cleanup();
+        resolve(orders);
+      };
+
+      const cleanup = () => {
+        this.ib.removeListener(EventNameRef.completedOrder, onCompletedOrder);
+        this.ib.removeListener(EventNameRef.completedOrdersEnd, onCompletedOrdersEnd);
+      };
+
+      this.ib.on(EventNameRef.completedOrder, onCompletedOrder);
+      this.ib.on(EventNameRef.completedOrdersEnd, onCompletedOrdersEnd);
+
+      // Request completed orders
+      this.ib.reqCompletedOrders(apiOnly);
+
+      // Timeout after 15s
+      setTimeout(() => {
+        cleanup();
+        resolve(orders);
+      }, 15_000);
+    });
+  }
+
   // ══════════════════════════════════════════════════════════
   //  CONTRACT RESOLUTION
   // ══════════════════════════════════════════════════════════

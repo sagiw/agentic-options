@@ -4594,12 +4594,17 @@ function HistoryTab() {
 
         <div className="card" style={{ padding: "12px 16px", flex: 1, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, alignItems: "center" }}>
           <div style={{ textAlign: "center" }}>
-            <div className="metric-label">Executions</div>
-            <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.totalExecutions || 0}</div>
+            <div className="metric-label">Total Trades</div>
+            <div style={{ fontSize: 22, fontWeight: 700 }}>{summary.totalOrders || 0}</div>
+            {(data.todayExecutionCount > 0 || data.completedOrderCount > 0) && (
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 2 }}>
+                {data.todayExecutionCount || 0} today · {data.completedOrderCount || 0} historical
+              </div>
+            )}
           </div>
           <div style={{ textAlign: "center" }}>
-            <div className="metric-label">Orders</div>
-            <div style={{ fontSize: 22, fontWeight: 700, color: "var(--accent-blue)" }}>{summary.totalOrders || 0}</div>
+            <div className="metric-label">Fills</div>
+            <div style={{ fontSize: 22, fontWeight: 700, color: "var(--accent-blue)" }}>{summary.totalExecutions || 0}</div>
           </div>
           <div style={{ textAlign: "center" }}>
             <div className="metric-label">Commissions</div>
@@ -4636,7 +4641,19 @@ function HistoryTab() {
       {/* IBKR Executions Table */}
       {data.executions.length > 0 && (
         <div className="card" style={{ marginBottom: 16 }}>
-          <div className="card-title">IBKR Execution History ({data.executions.length} orders)</div>
+          <div className="card-title" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            IBKR Trade History ({data.executions.length} orders)
+            {data.todayExecutionCount > 0 && (
+              <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(56,189,248,0.15)", color: "var(--accent-blue)" }}>
+                {data.todayExecutionCount} today
+              </span>
+            )}
+            {data.completedOrderCount > 0 && (
+              <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "rgba(168,85,247,0.15)", color: "#a855f7" }}>
+                {data.completedOrderCount} historical
+              </span>
+            )}
+          </div>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
               <thead>
@@ -4668,6 +4685,11 @@ function HistoryTab() {
                         {j === 0 && (
                           <td style={{ padding: "8px", fontWeight: 700, verticalAlign: "top" }} rowSpan={order.legs.length}>
                             {order.symbol}
+                            {order.source === "completed" && (
+                              <span style={{ display: "block", fontSize: 9, fontWeight: 400, color: "#a855f7", marginTop: 2 }}>
+                                historical
+                              </span>
+                            )}
                           </td>
                         )}
                         <td style={{ padding: "8px" }}>

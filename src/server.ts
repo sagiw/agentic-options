@@ -1072,20 +1072,37 @@ app.get("/api/history", async (req, res) => {
   try {
     const days = Math.min(parseInt(req.query.days as string) || 30, 90);
     let executions: any[] = [];
+    let completedOrders: any[] = [];
     let source = "local";
 
-    // Try IBKR first for real execution data
+    // Try IBKR for real execution data
     if (ibkr.isConnected) {
-      try {
-        executions = await ibkr.getExecutions(days);
+      // Fetch both data sources in parallel:
+      // 1. reqExecutions — today's fills with commissions & realized P&L (detailed per-fill)
+      // 2. reqCompletedOrders — filled/cancelled orders from recent days (broader history)
+      const [execResult, completedResult] = await Promise.allSettled([
+        ibkr.getExecutions(days),
+        ibkr.getCompletedOrders(false), // false = include both API and TWS orders
+      ]);
+
+      if (execResult.status === "fulfilled") {
+        executions = execResult.value;
         source = "ibkr";
-        log.info(`History: ${executions.length} executions from IBKR (last ${days} days)`);
-      } catch (err) {
-        log.warn(`IBKR execution history failed: ${err}`);
+        log.info(`History: ${executions.length} executions from reqExecutions`);
+      } else {
+        log.warn(`IBKR reqExecutions failed: ${execResult.reason}`);
+      }
+
+      if (completedResult.status === "fulfilled") {
+        completedOrders = completedResult.value;
+        source = "ibkr";
+        log.info(`History: ${completedOrders.length} completed orders from reqCompletedOrders`);
+      } else {
+        log.warn(`IBKR reqCompletedOrders failed: ${completedResult.reason}`);
       }
     }
 
-    // Group executions by orderId for multi-leg strategies
+    // ── Group today's executions by orderId (detailed fills with commissions) ──
     const orderMap = new Map<number, any>();
     let totalCommissions = 0;
     let totalRealizedPnL = 0;
@@ -1103,6 +1120,7 @@ app.get("/api/history", async (req, res) => {
           legs: [],
           totalCommission: 0,
           totalRealizedPnL: 0,
+          source: "executions",
         });
       }
       const order = orderMap.get(orderId)!;
@@ -1121,6 +1139,56 @@ app.get("/api/history", async (req, res) => {
       order.totalCommission += exec.commission || 0;
       order.totalRealizedPnL += exec.realizedPnL || 0;
     }
+
+    // ── Process completed orders (historical, beyond today) ──
+    // Deduplicate: skip completed orders whose orderId/permId already appear in today's executions
+    const executionOrderIds = new Set(executions.map((e: any) => e.orderId));
+
+    const completedFormatted = completedOrders
+      .filter((co: any) => {
+        // Only show filled orders, skip cancelled
+        const status = (co.status || co.completedStatus || "").toLowerCase();
+        return status.includes("filled") || status.includes("fill");
+      })
+      .filter((co: any) => !executionOrderIds.has(co.orderId)) // deduplicate
+      .map((co: any) => {
+        // IBKR returns 1.7976931348623157e+308 for unknown commission/PnL — treat as 0
+        const comm = typeof co.commission === "number" && co.commission < 1e9 ? co.commission : 0;
+        const pnl = typeof co.realizedPnL === "number" && Math.abs(co.realizedPnL) < 1e9 ? co.realizedPnL : 0;
+        totalCommissions += comm;
+        totalRealizedPnL += pnl;
+
+        return {
+          orderId: co.orderId || co.permId,
+          permId: co.permId,
+          symbol: co.symbol,
+          time: co.completedTime || "",
+          action: co.action,
+          orderType: co.orderType,
+          status: co.status || co.completedStatus,
+          source: "completed",
+          legs: [{
+            secType: co.secType,
+            strike: co.strike,
+            right: co.right,
+            expiration: co.expiration,
+            side: co.action === "BUY" ? "BOT" : co.action === "SELL" ? "SLD" : co.action,
+            quantity: co.filledQuantity || co.totalQuantity,
+            price: co.avgFillPrice || co.lmtPrice,
+            exchange: co.exchange,
+            commission: comm,
+            realizedPnL: pnl,
+          }],
+          totalCommission: comm,
+          totalRealizedPnL: pnl,
+        };
+      });
+
+    // ── Merge both sources, sorted by time (newest first) ──
+    const allOrders = [
+      ...Array.from(orderMap.values()),
+      ...completedFormatted,
+    ].sort((a: any, b: any) => (b.time || "").localeCompare(a.time || ""));
 
     // Also include tracked local orders for completeness
     const localOrders = trackedOrders
@@ -1148,13 +1216,13 @@ app.get("/api/history", async (req, res) => {
       data: {
         source,
         daysBack: days,
-        executions: Array.from(orderMap.values()).sort(
-          (a, b) => (b.time || "").localeCompare(a.time || "")
-        ),
+        executions: allOrders,
+        completedOrderCount: completedFormatted.length,
+        todayExecutionCount: executions.length,
         localOrders: localOrders.reverse(),
         summary: {
-          totalExecutions: executions.length,
-          totalOrders: orderMap.size,
+          totalExecutions: executions.length + completedFormatted.length,
+          totalOrders: allOrders.length,
           totalLocalOrders: localOrders.length,
           totalCommissions: Math.round(totalCommissions * 100) / 100,
           totalRealizedPnL: Math.round(totalRealizedPnL * 100) / 100,
