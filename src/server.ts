@@ -54,6 +54,12 @@ import {
   getDynamicScoreAdjustment,
   getOpenTrades,
 } from "./quant/trade-journal.js";
+import {
+  monitorPositions,
+  buildExitConfig,
+  type PositionMonitorResult,
+  type ExitRuleConfig,
+} from "./quant/position-monitor.js";
 import type { OrderStatusUpdate } from "./api/ibkr/portfolio-sync.js";
 import type { Portfolio, AccountSummary } from "./types/portfolio.js";
 import type { RankedStrategy } from "./types/agents.js";
@@ -343,6 +349,8 @@ app.get("/api/recommendations", async (req, res) => {
             supports: analysis.technicalAnalysis.supports,
             resistances: analysis.technicalAnalysis.resistances,
             signals: analysis.technicalAnalysis.signals,
+            breakout: analysis.technicalAnalysis.breakout ?? null,
+            meanReversion: analysis.technicalAnalysis.meanReversion ?? null,
           } : null,
         },
         isLive: ibkr.isConnected,
@@ -1468,6 +1476,66 @@ app.get("/api/portfolio-analysis", async (_req, res) => {
         summary,
       },
     });
+  } catch (err) {
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
+ * GET /api/monitor — Position monitor with exit/roll/hedge recommendations
+ *
+ * Evaluates all open positions against exit rules and returns action signals:
+ * - close_profit: take profit (credit at 50%, debit at 75%)
+ * - close_loss: stop loss (50% of max loss)
+ * - close_dte: close before expiration (14 DTE)
+ * - roll_out: roll expiring positions to later month
+ * - hedge: add protective position (IV spike, delta imbalance)
+ * - hold: position within parameters
+ */
+app.get("/api/monitor", async (req, res) => {
+  try {
+    const portfolio = await refreshPortfolio();
+
+    // Parse optional exit rule overrides from query
+    const exitConfig = buildExitConfig({
+      profitTargetPct: parseFloat(req.query.profitTarget as string) || 50,
+      stopLossPct: parseFloat(req.query.stopLoss as string) || 50,
+      minDTE: parseInt(req.query.minDTE as string, 10) || 14,
+      rollWindowDTE: parseInt(req.query.rollWindow as string, 10) || 21,
+    });
+
+    // Collect current IV ranks for symbols with open trades
+    const currentIVBySymbol = new Map<string, number>();
+    const openTrades = getOpenTrades();
+    const uniqueSymbols = [...new Set(openTrades.map((t) => t.symbol))];
+
+    for (const sym of uniqueSymbols.slice(0, 10)) {
+      try {
+        const snapshot = await getMarketSnapshot(sym);
+        if (snapshot && typeof snapshot.ivRank === "number") {
+          currentIVBySymbol.set(sym, snapshot.ivRank);
+        }
+      } catch {
+        // Skip IV fetch for this symbol
+      }
+    }
+
+    const result = monitorPositions(portfolio, currentIVBySymbol, exitConfig);
+
+    res.json({
+      success: true,
+      data: result,
+    });
+
+    const urgent = result.actions.filter((a) => a.urgency === "immediate").length;
+    if (urgent > 0) {
+      log.warn(`Position monitor: ${urgent} actions require IMMEDIATE attention`);
+    }
+    log.info(
+      `Position monitor: ${result.actions.length} actions ` +
+      `(${result.summary.closeProfit} profit, ${result.summary.closeLoss} stop, ` +
+      `${result.summary.rollOut} roll, ${result.summary.hold} hold)`
+    );
   } catch (err) {
     res.status(500).json({ success: false, error: String(err) });
   }

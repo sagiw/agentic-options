@@ -3272,6 +3272,38 @@ function MarketAnalysisPanel({ technical, price }) {
           })}
         </div>
       )}
+
+      {/* Breakout / Mean Reversion alerts */}
+      {(technical.breakout?.detected || technical.meanReversion?.detected) && (
+        <div style={{ marginTop: 10, display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {technical.breakout?.detected && (
+            <div style={{
+              padding: "6px 12px", borderRadius: 8, fontWeight: 700, fontSize: 11,
+              background: technical.breakout.type === "resistance_break"
+                ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
+              color: technical.breakout.type === "resistance_break"
+                ? "var(--accent-green)" : "var(--accent-red)",
+              border: `1px solid ${technical.breakout.type === "resistance_break"
+                ? "rgba(16,185,129,0.3)" : "rgba(239,68,68,0.3)"}`,
+            }}>
+              {technical.breakout.type === "resistance_break" ? "🚀 BREAKOUT" : "💥 BREAKDOWN"} above ${technical.breakout.level.toFixed(2)} (strength: {technical.breakout.strength}%)
+            </div>
+          )}
+          {technical.meanReversion?.detected && (
+            <div style={{
+              padding: "6px 12px", borderRadius: 8, fontWeight: 700, fontSize: 11,
+              background: technical.meanReversion.type === "oversold_bounce"
+                ? "rgba(16,185,129,0.12)" : "rgba(239,68,68,0.12)",
+              color: technical.meanReversion.type === "oversold_bounce"
+                ? "var(--accent-green)" : "var(--accent-red)",
+              border: `1px solid ${technical.meanReversion.type === "oversold_bounce"
+                ? "rgba(16,185,129,0.25)" : "rgba(239,68,68,0.25)"}`,
+            }}>
+              {technical.meanReversion.type === "oversold_bounce" ? "📈 OVERSOLD BOUNCE" : "📉 OVERBOUGHT PULLBACK"} signal (strength: {technical.meanReversion.strength}%)
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -4294,6 +4326,222 @@ function OrdersTab({ orders }) {
 }
 
 // ═══════════════════════════════════════════════════════════
+//  POSITION MONITOR — Exit rules, profit-taking, stop-loss
+// ═══════════════════════════════════════════════════════════
+
+function PositionMonitorPanel() {
+  const [monitorData, setMonitorData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+
+  const fetchMonitor = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(API + "/monitor");
+      const json = await res.json();
+      if (json.success) setMonitorData(json.data);
+    } catch (err) {
+      console.error("Monitor fetch error:", err);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { fetchMonitor(); }, []);
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const interval = setInterval(fetchMonitor, 60_000); // refresh every 60s
+    return () => clearInterval(interval);
+  }, [autoRefresh]);
+
+  const actionColors = {
+    close_profit: { bg: "rgba(16,185,129,0.12)", color: "var(--accent-green)", icon: "💰", label: "TAKE PROFIT" },
+    close_loss: { bg: "rgba(239,68,68,0.12)", color: "var(--accent-red)", icon: "🛑", label: "STOP LOSS" },
+    close_dte: { bg: "rgba(245,158,11,0.12)", color: "var(--accent-amber)", icon: "⏰", label: "DTE EXIT" },
+    roll_out: { bg: "rgba(139,92,246,0.12)", color: "var(--accent-purple)", icon: "🔄", label: "ROLL" },
+    hedge: { bg: "rgba(59,130,246,0.12)", color: "var(--accent-blue)", icon: "🛡️", label: "HEDGE" },
+    hold: { bg: "rgba(148,163,184,0.06)", color: "var(--text-muted)", icon: "✅", label: "HOLD" },
+    monitor: { bg: "rgba(245,158,11,0.08)", color: "var(--accent-amber)", icon: "👁️", label: "WATCH" },
+  };
+
+  const urgencyColors = {
+    immediate: { bg: "rgba(239,68,68,0.15)", color: "var(--accent-red)", label: "IMMEDIATE" },
+    soon: { bg: "rgba(245,158,11,0.12)", color: "var(--accent-amber)", label: "SOON" },
+    watch: { bg: "rgba(148,163,184,0.08)", color: "var(--text-muted)", label: "WATCH" },
+  };
+
+  if (!monitorData) {
+    return (
+      <div className="card" style={{ padding: 24, textAlign: "center" }}>
+        <button className="btn btn-primary" onClick={fetchMonitor} disabled={loading}>
+          {loading ? "Scanning positions..." : "Scan Open Positions"}
+        </button>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
+          Evaluates all open positions against exit rules
+        </div>
+      </div>
+    );
+  }
+
+  const d = monitorData;
+  const actionable = d.actions.filter((a) => a.action !== "hold");
+
+  return (
+    <div>
+      {/* Header with refresh controls */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <span style={{ fontSize: 14, fontWeight: 700 }}>Position Monitor</span>
+          <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+            {d.summary.totalOpen} open positions
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <label style={{ fontSize: 10, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 4 }}>
+            <input type="checkbox" checked={autoRefresh}
+              onChange={(e) => setAutoRefresh(e.target.checked)} />
+            Auto-refresh (60s)
+          </label>
+          <button className="btn" onClick={fetchMonitor} disabled={loading}
+            style={{ fontSize: 10, padding: "4px 10px" }}>
+            {loading ? "..." : "Refresh"}
+          </button>
+        </div>
+      </div>
+
+      {/* Warnings */}
+      {d.warnings.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          {d.warnings.map((w, i) => (
+            <div key={i} style={{
+              padding: "6px 10px", borderRadius: 6, marginBottom: 4,
+              background: "rgba(239,68,68,0.08)", color: "var(--accent-red)",
+              fontSize: 11, fontWeight: 600,
+            }}>⚠️ {w}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Summary cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(100px, 1fr))", gap: 8, marginBottom: 16 }}>
+        {[
+          { label: "Take Profit", count: d.summary.closeProfit, color: "var(--accent-green)" },
+          { label: "Stop Loss", count: d.summary.closeLoss, color: "var(--accent-red)" },
+          { label: "DTE Exit", count: d.summary.closeDTE, color: "var(--accent-amber)" },
+          { label: "Roll", count: d.summary.rollOut, color: "var(--accent-purple)" },
+          { label: "Hedge", count: d.summary.hedge, color: "var(--accent-blue)" },
+          { label: "Hold", count: d.summary.hold, color: "var(--text-muted)" },
+        ].map((item) => (
+          <div key={item.label} className="card" style={{ padding: "8px 10px", textAlign: "center" }}>
+            <div style={{ fontSize: 20, fontWeight: 800, color: item.count > 0 ? item.color : "var(--text-muted)" }}>
+              {item.count}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--text-muted)", textTransform: "uppercase" }}>{item.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Action items (non-hold first) */}
+      {actionable.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase" }}>
+            Action Required ({actionable.length})
+          </div>
+          {actionable.map((a) => {
+            const ac = actionColors[a.action] || actionColors.hold;
+            const uc = urgencyColors[a.urgency] || urgencyColors.watch;
+            return (
+              <div key={a.id} className="card" style={{
+                padding: "10px 14px", marginBottom: 8,
+                borderLeft: `3px solid ${ac.color}`,
+              }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>{ac.icon}</span>
+                    <span style={{ fontWeight: 700, fontSize: 13 }}>{a.symbol}</span>
+                    <span style={{
+                      fontSize: 9, padding: "2px 6px", borderRadius: 4, fontWeight: 700,
+                      background: ac.bg, color: ac.color,
+                    }}>{ac.label}</span>
+                    <span style={{
+                      fontSize: 9, padding: "2px 6px", borderRadius: 4, fontWeight: 600,
+                      background: uc.bg, color: uc.color,
+                    }}>{uc.label}</span>
+                  </div>
+                  <div style={{
+                    fontSize: 13, fontWeight: 700,
+                    color: a.currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                  }}>
+                    {a.currentPnL >= 0 ? "+" : ""}{fmt.usd(a.currentPnL)}
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-primary)", marginBottom: 4 }}>
+                  {a.message}
+                </div>
+                <div style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                  {a.reasoning.map((r, ri) => (
+                    <div key={ri}>• {r}</div>
+                  ))}
+                </div>
+                {a.rollTarget && (
+                  <div style={{
+                    marginTop: 6, fontSize: 10, padding: "4px 8px", borderRadius: 4,
+                    background: "rgba(139,92,246,0.08)", color: "var(--accent-purple)",
+                  }}>
+                    Roll target: {a.rollTarget.newDTE} DTE | Expected credit: ${a.rollTarget.expectedCredit.toFixed(0)}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Hold positions (collapsed) */}
+      {d.summary.hold > 0 && (() => {
+        const holds = d.actions.filter((a) => a.action === "hold");
+        return (
+          <div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginBottom: 8, textTransform: "uppercase" }}>
+              Holding ({holds.length})
+            </div>
+            {holds.map((a) => (
+              <div key={a.id} style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "6px 10px", borderRadius: 6, marginBottom: 4,
+                background: "rgba(148,163,184,0.04)",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600 }}>{a.symbol}</span>
+                  <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+                    {a.daysToExpiry > 0 ? `${a.daysToExpiry} DTE` : ""}
+                  </span>
+                </div>
+                <span style={{
+                  fontSize: 11, fontWeight: 600,
+                  color: a.currentPnL >= 0 ? "var(--accent-green)" : "var(--accent-red)",
+                }}>
+                  {a.currentPnL >= 0 ? "+" : ""}{fmt.usd(a.currentPnL)}
+                  <span style={{ fontSize: 9, color: "var(--text-muted)", marginLeft: 4 }}>
+                    ({a.pnlPctOfMax.toFixed(0)}%)
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {d.actions.length === 0 && (
+        <div style={{ textAlign: "center", padding: 24, color: "var(--text-muted)", fontSize: 12 }}>
+          No open positions to monitor
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
 //  HISTORY TAB — Execution History with P&L & Commissions
 // ═══════════════════════════════════════════════════════════
 
@@ -5160,6 +5408,10 @@ function App() {
           <div className="card">
             <div className="card-title">Positions ({positions.length})</div>
             <PositionsTable positions={positions} />
+          </div>
+          {/* Position Monitor */}
+          <div className="card" style={{ marginTop: 16 }}>
+            <PositionMonitorPanel />
           </div>
         </div>
       )}

@@ -16,6 +16,42 @@ import type { OptionChainEntry, OptionsStrategy, StrategyType } from "../types/o
 import { roundToTickSize } from "../utils/tick-size.js";
 
 /**
+ * Find the option closest to a target delta (absolute value).
+ * Returns null if no option has delta close enough (within tolerance).
+ *
+ * For puts, delta is negative — we compare absolute values.
+ * Target delta should be given as positive (e.g., 0.30 for a 30-delta option).
+ *
+ * @param options - Sorted array of option chain entries
+ * @param targetDelta - Target absolute delta (0.01 – 0.99)
+ * @param tolerance - Max allowed deviation from target (default: 0.15)
+ * @returns Closest matching option or null
+ */
+export function findByDelta(
+  options: OptionChainEntry[],
+  targetDelta: number,
+  tolerance: number = 0.15
+): OptionChainEntry | null {
+  if (options.length === 0) return null;
+
+  let best: OptionChainEntry | null = null;
+  let bestDiff = Infinity;
+
+  for (const opt of options) {
+    const absDelta = Math.abs(opt.greeks?.delta ?? 0);
+    const diff = Math.abs(absDelta - targetDelta);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      best = opt;
+    }
+  }
+
+  // Reject if too far from target
+  if (bestDiff > tolerance) return null;
+  return best;
+}
+
+/**
  * Build a Put Credit Spread (bullish credit strategy).
  *
  * Sell higher-strike put + Buy lower-strike put (same expiration).
@@ -34,7 +70,8 @@ export function buildPutCreditSpread(
   underlyingPrice: number,
   chain: OptionChainEntry[],
   expiration: Date,
-  targetWidth: number = 5
+  targetWidth: number = 5,
+  targetDelta: number = 0.30 // Sell the ~30-delta OTM put for better POP
 ): OptionsStrategy | null {
   const expirationTime = expiration.getTime();
   const puts = chain
@@ -48,13 +85,21 @@ export function buildPutCreditSpread(
 
   if (puts.length < 2) return null;
 
-  // Find ATM put (higher strike — short leg)
-  const shortPut = puts.reduce((prev, curr) =>
-    Math.abs(curr.contract.strike - underlyingPrice) <
-    Math.abs(prev.contract.strike - underlyingPrice)
-      ? curr
-      : prev
-  );
+  // Delta-based strike selection: target ~30-delta OTM put for the short leg.
+  // This gives ~70% POP (probability of profit) vs ~50% for ATM.
+  // Falls back to ATM if delta data is unavailable.
+  const otmPuts = puts.filter((p) => p.contract.strike < underlyingPrice);
+  let shortPut = findByDelta(otmPuts, targetDelta);
+
+  // Fallback: if no delta data, use ATM
+  if (!shortPut) {
+    shortPut = puts.reduce((prev, curr) =>
+      Math.abs(curr.contract.strike - underlyingPrice) <
+      Math.abs(prev.contract.strike - underlyingPrice)
+        ? curr
+        : prev
+    );
+  }
 
   // Find lower strike put (long leg) — roughly targetWidth below short strike
   const longPut = puts
@@ -103,7 +148,8 @@ export function buildCallCreditSpread(
   underlyingPrice: number,
   chain: OptionChainEntry[],
   expiration: Date,
-  targetWidth: number = 5
+  targetWidth: number = 5,
+  targetDelta: number = 0.30 // Sell the ~30-delta OTM call for better POP
 ): OptionsStrategy | null {
   const expirationTime = expiration.getTime();
   const calls = chain
@@ -117,13 +163,21 @@ export function buildCallCreditSpread(
 
   if (calls.length < 2) return null;
 
-  // Find ATM call (lower strike — short leg)
-  const shortCall = calls.reduce((prev, curr) =>
-    Math.abs(curr.contract.strike - underlyingPrice) <
-    Math.abs(prev.contract.strike - underlyingPrice)
-      ? curr
-      : prev
-  );
+  // Delta-based strike selection: target ~30-delta OTM call for the short leg.
+  // This gives ~70% POP (probability of profit) vs ~50% for ATM.
+  // Falls back to ATM if delta data is unavailable.
+  const otmCalls = calls.filter((c) => c.contract.strike > underlyingPrice);
+  let shortCall = findByDelta(otmCalls, targetDelta);
+
+  // Fallback: if no delta data, use ATM
+  if (!shortCall) {
+    shortCall = calls.reduce((prev, curr) =>
+      Math.abs(curr.contract.strike - underlyingPrice) <
+      Math.abs(prev.contract.strike - underlyingPrice)
+        ? curr
+        : prev
+    );
+  }
 
   // Find higher strike call (long leg) — roughly targetWidth above short strike
   const longCall = calls.find(

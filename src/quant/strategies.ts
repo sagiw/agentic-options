@@ -33,8 +33,10 @@ import {
   buildCoveredCall,
   buildCalendarSpread,
   buildDiagonalSpread,
+  findByDelta,
 } from "./strategy-builders.js";
-import { calculatePOP, calculateEV, type POPResult, type EVResult } from "./scoring.js";
+import { calculatePOP, calculateEV, passesLiquidityFilter, type POPResult, type EVResult } from "./scoring.js";
+import { getDynamicScoreAdjustment } from "./trade-journal.js";
 
 /** Determine account tier */
 export function getAccountTier(netLiquidation: number): AccountTier {
@@ -203,7 +205,8 @@ export function buildIronCondor(
   chain: OptionChainEntry[],
   expiration: Date,
   wingWidth: number = 5,
-  distanceFromATM: number = 10
+  distanceFromATM: number = 10,
+  targetDelta: number = 0.20 // Short legs at ~20-delta for wider iron condor
 ): OptionsStrategy | null {
   const expirationTime = expiration.getTime();
   const calls = chain
@@ -213,13 +216,23 @@ export function buildIronCondor(
     .filter((e) => e.contract.type === "put" && e.contract.expiration.getTime() === expirationTime && e.mid > 0)
     .sort((a, b) => a.contract.strike - b.contract.strike);
 
-  // Short call at ATM + distance
-  const shortCall = calls.find((c) => c.contract.strike >= underlyingPrice + distanceFromATM);
-  const longCall = shortCall && calls.find((c) => c.contract.strike >= shortCall.contract.strike + wingWidth);
+  // Delta-based strike selection for short legs (~20-delta for iron condors = ~80% POP per side)
+  const otmCalls = calls.filter((c) => c.contract.strike > underlyingPrice);
+  const otmPuts = puts.filter((p) => p.contract.strike < underlyingPrice);
 
-  // Short put at ATM - distance
-  const shortPut = [...puts].reverse().find((p) => p.contract.strike <= underlyingPrice - distanceFromATM);
-  const longPut = shortPut && puts.find((p) => p.contract.strike <= shortPut.contract.strike - wingWidth);
+  let shortCall = findByDelta(otmCalls, targetDelta);
+  let shortPut = findByDelta(otmPuts, targetDelta);
+
+  // Fallback to distance-from-ATM if no delta data
+  if (!shortCall) {
+    shortCall = calls.find((c) => c.contract.strike >= underlyingPrice + distanceFromATM) ?? null;
+  }
+  if (!shortPut) {
+    shortPut = [...puts].reverse().find((p) => p.contract.strike <= underlyingPrice - distanceFromATM) ?? null;
+  }
+
+  const longCall = shortCall && calls.find((c) => c.contract.strike >= shortCall!.contract.strike + wingWidth);
+  const longPut = shortPut && puts.find((p) => p.contract.strike <= shortPut!.contract.strike - wingWidth);
 
   if (!shortCall || !longCall || !shortPut || !longPut) return null;
 
@@ -267,7 +280,8 @@ export function buildCashSecuredPut(
   underlying: string,
   underlyingPrice: number,
   chain: OptionChainEntry[],
-  expiration: Date
+  expiration: Date,
+  targetDelta: number = 0.25 // Sell ~25-delta OTM put for ~75% POP
 ): OptionsStrategy | null {
   const puts = chain
     .filter(
@@ -281,8 +295,12 @@ export function buildCashSecuredPut(
 
   if (puts.length === 0) return null;
 
-  // Sell the first OTM put (closest to ATM)
-  const shortPut = puts[0];
+  // Delta-based strike selection: target ~25-delta OTM put for better POP.
+  // Falls back to closest OTM put if delta data unavailable.
+  let shortPut = findByDelta(puts, targetDelta);
+  if (!shortPut) {
+    shortPut = puts[0]; // Fallback: closest to ATM
+  }
   // Use bid for selling — matches real execution price
   const premium = roundToTickSize(shortPut.bid > 0 ? shortPut.bid : shortPut.mid, underlying);
 
@@ -402,6 +420,37 @@ export function scoreStrategy(
     contribution: evResult.isPositiveEV ? Math.min(evResult.evPerDollarRisked * 10, 5) : -3,
   });
 
+  // 9. Journal feedback — weight dynamic (up to ±10 points)
+  const journalAdj = getDynamicScoreAdjustment(strategy.type);
+  if (journalAdj !== 0) {
+    factors.push({
+      name: "Historical Performance",
+      value: journalAdj,
+      weight: 0.05,
+      contribution: journalAdj,
+    });
+  }
+
+  // 10. IV Rank quality gate — penalize credit in low IV, debit in high IV
+  let ivGatePenalty = 0;
+  if (isCreditStrategy && ivRank < 25) {
+    ivGatePenalty = -8; // selling premium in low IV is poor value
+  } else if (!isCreditStrategy && ivRank > 75) {
+    ivGatePenalty = -5; // buying premium in high IV = overpaying
+  } else if (isCreditStrategy && ivRank > 60) {
+    ivGatePenalty = 3; // bonus for selling in high IV
+  } else if (!isCreditStrategy && ivRank < 25) {
+    ivGatePenalty = 3; // bonus for buying in low IV
+  }
+  if (ivGatePenalty !== 0) {
+    factors.push({
+      name: "IV Quality Gate",
+      value: ivRank,
+      weight: 0.05,
+      contribution: ivGatePenalty,
+    });
+  }
+
   const score = factors.reduce((sum, f) => sum + f.contribution, 0);
   return { score, factors, pop: popResult, ev: evResult };
 }
@@ -506,6 +555,15 @@ export function findStrategies(
 
       // Also skip if theoretical capital exceeds available funds
       if (strategy.requiredCapital > account.availableFunds) continue;
+
+      // ── Liquidity hard filter: OI > 100, Volume > 10, Spread < 10% ──
+      // Prevents entering illiquid contracts with bad fills
+      if (!passesLiquidityFilter(strategy, chain, 100, 10, 10)) continue;
+
+      // ── IV Rank quality gate: block poor-value entries ──
+      // Don't sell premium in very low IV (< 20) — not enough edge
+      const isCreditType = strategy.netDebit < 0;
+      if (isCreditType && ivRank < 20) continue;
 
       const { score, factors } = scoreStrategy(
         strategy, underlyingPrice, ivRank, options?.technicalAnalysis

@@ -29,6 +29,19 @@ export interface TechnicalAnalysis {
   supports: number[];
   resistances: number[];
   signals: TechnicalSignal[];
+  /** Breakout/breakdown detection */
+  breakout?: {
+    detected: boolean;
+    type: "resistance_break" | "support_break" | "none";
+    level: number;
+    strength: number; // 0-100
+  };
+  /** Mean reversion signal */
+  meanReversion?: {
+    detected: boolean;
+    type: "oversold_bounce" | "overbought_pullback" | "none";
+    strength: number; // 0-100
+  };
 }
 
 export interface TechnicalSignal {
@@ -340,6 +353,94 @@ export function computeTechnicalAnalysis(
         ? 100 - bullishPct
         : 50;
 
+  // ── Breakout/breakdown detection ──
+  // Check if price just broke above nearest resistance or below nearest support
+  const prevClose = closes[closes.length - 2] || currentPrice;
+  let breakout: TechnicalAnalysis["breakout"] = {
+    detected: false,
+    type: "none",
+    level: 0,
+    strength: 0,
+  };
+
+  // Resistance breakout: prev close was below, now above
+  if (resistances.length > 0) {
+    const nearestResist = resistances[0];
+    if (prevClose < nearestResist && currentPrice > nearestResist) {
+      const breakStrength = Math.min(100,
+        ((currentPrice - nearestResist) / nearestResist) * 1000 +
+        (macdResult.histogram > 0 ? 30 : 0) +
+        (rsi14 < 70 ? 20 : 0) // not overbought = stronger breakout
+      );
+      breakout = {
+        detected: true,
+        type: "resistance_break",
+        level: nearestResist,
+        strength: Math.round(breakStrength),
+      };
+    }
+  }
+
+  // Support breakdown: prev close was above, now below
+  if (!breakout.detected && supports.length > 0) {
+    const nearestSupport = supports[0];
+    if (prevClose > nearestSupport && currentPrice < nearestSupport) {
+      const breakStrength = Math.min(100,
+        ((nearestSupport - currentPrice) / nearestSupport) * 1000 +
+        (macdResult.histogram < 0 ? 30 : 0) +
+        (rsi14 > 30 ? 20 : 0) // not oversold = stronger breakdown
+      );
+      breakout = {
+        detected: true,
+        type: "support_break",
+        level: nearestSupport,
+        strength: Math.round(breakStrength),
+      };
+    }
+  }
+
+  // ── Mean reversion detection ──
+  // RSI extremes + Bollinger Band touch + support/resistance nearby
+  let meanReversion: TechnicalAnalysis["meanReversion"] = {
+    detected: false,
+    type: "none",
+    strength: 0,
+  };
+
+  // Oversold bounce: RSI < 30 AND price near lower Bollinger AND near support
+  if (rsi14 < 30 && bbPct < 0.15) {
+    const nearSup = supports.some(
+      (s) => Math.abs(s - currentPrice) / currentPrice < 0.03
+    );
+    const strength = Math.round(
+      (30 - rsi14) * 2 + // RSI depth
+      (0.15 - bbPct) * 200 + // BB depth
+      (nearSup ? 25 : 0) // support confluence
+    );
+    meanReversion = {
+      detected: true,
+      type: "oversold_bounce",
+      strength: Math.min(100, strength),
+    };
+  }
+
+  // Overbought pullback: RSI > 70 AND price near upper Bollinger AND near resistance
+  if (rsi14 > 70 && bbPct > 0.85) {
+    const nearRes = resistances.some(
+      (r) => Math.abs(r - currentPrice) / currentPrice < 0.03
+    );
+    const strength = Math.round(
+      (rsi14 - 70) * 2 + // RSI elevation
+      (bbPct - 0.85) * 200 + // BB elevation
+      (nearRes ? 25 : 0) // resistance confluence
+    );
+    meanReversion = {
+      detected: true,
+      type: "overbought_pullback",
+      strength: Math.min(100, strength),
+    };
+  }
+
   return {
     rsi14,
     sma20: sma20Val,
@@ -357,6 +458,8 @@ export function computeTechnicalAnalysis(
     supports,
     resistances,
     signals,
+    breakout,
+    meanReversion,
   };
 }
 
@@ -473,6 +576,16 @@ export function getTechnicalAlignmentScore(
 
     // MACD bullish
     if (ta.macdHistogram > 0) score += 5;
+
+    // Breakout bonus: resistance break = strong bullish signal
+    if (ta.breakout?.detected && ta.breakout.type === "resistance_break") {
+      score += Math.round(ta.breakout.strength * 0.15); // up to +15
+    }
+
+    // Mean reversion: oversold bounce = great long entry
+    if (ta.meanReversion?.detected && ta.meanReversion.type === "oversold_bounce") {
+      score += Math.round(ta.meanReversion.strength * 0.12); // up to +12
+    }
   } else if (isBearishStrategy(strategyType)) {
     // Trend alignment
     if (ta.trend === "bearish") score += 15;
@@ -491,6 +604,16 @@ export function getTechnicalAlignmentScore(
 
     // MACD bearish
     if (ta.macdHistogram < 0) score += 5;
+
+    // Breakdown bonus: support break = strong bearish signal
+    if (ta.breakout?.detected && ta.breakout.type === "support_break") {
+      score += Math.round(ta.breakout.strength * 0.15); // up to +15
+    }
+
+    // Mean reversion: overbought pullback = great short entry
+    if (ta.meanReversion?.detected && ta.meanReversion.type === "overbought_pullback") {
+      score += Math.round(ta.meanReversion.strength * 0.12); // up to +12
+    }
   } else {
     // Neutral strategies — best in range-bound markets
     if (ta.rsi14 >= 40 && ta.rsi14 <= 60) score += 10;
@@ -502,6 +625,10 @@ export function getTechnicalAlignmentScore(
 
     // Low MACD histogram = range-bound
     if (Math.abs(ta.macdHistogram) < 0.5) score += 5;
+
+    // Breakout/mean-reversion = BAD for neutral (expect movement)
+    if (ta.breakout?.detected) score -= 10;
+    if (ta.meanReversion?.detected) score -= 5;
   }
 
   return Math.max(0, Math.min(100, score));
