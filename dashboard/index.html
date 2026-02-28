@@ -3326,6 +3326,39 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
           <div className="strategy-score">{s.score.toFixed(0)}</div>
         </div>
       </div>
+      {/* ── Profit Mechanism Badge ── */}
+      {s.profitMechanism && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8, marginBottom: 8,
+          padding: "6px 10px", borderRadius: 8,
+          background: s.profitMechanism.type === "credit"
+            ? "rgba(16,185,129,0.08)" : "rgba(59,130,246,0.08)",
+          border: `1px solid ${s.profitMechanism.type === "credit"
+            ? "rgba(16,185,129,0.2)" : "rgba(59,130,246,0.2)"}`,
+        }}>
+          <span style={{
+            fontSize: 15,
+          }}>{s.profitMechanism.type === "credit" ? "\u{1F4B0}" : "\u{1F3AF}"}</span>
+          <div style={{ flex: 1 }}>
+            <div style={{
+              fontSize: 11, fontWeight: 700,
+              color: s.profitMechanism.type === "credit" ? "var(--accent-green)" : "var(--accent-blue)",
+            }}>
+              {s.profitMechanism.type === "credit" ? "Premium Collection" : "Directional Profit"}
+            </div>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1, lineHeight: 1.4 }}>
+              {s.profitMechanism.labelHe}
+            </div>
+          </div>
+          {s.profitMechanism.thetaFavorable && (
+            <span style={{
+              fontSize: 9, padding: "2px 6px", borderRadius: 4, fontWeight: 600,
+              background: "rgba(16,185,129,0.15)", color: "var(--accent-green)",
+            }}>Theta+</span>
+          )}
+        </div>
+      )}
+
       <div className="strategy-details">
         <div>
           <div className="strategy-detail-label">Max Profit</div>
@@ -3357,6 +3390,60 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
           <div className="strategy-detail-value">{fmt.usd(s.requiredCapital)}</div>
         </div>
       </div>
+
+      {/* ── Commission & Net Profit Breakdown ── */}
+      {s.commissions && (
+        <div style={{
+          background: "var(--bg)", borderRadius: 8, padding: "8px 12px", marginTop: 8,
+          border: "1px solid var(--border)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 10, fontWeight: 700, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+              Commission Impact
+            </span>
+            <span style={{ fontSize: 10, color: "var(--text-muted)" }}>
+              ${s.commissions.perLeg}/contract x {s.commissions.totalLegs} legs
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 6 }}>
+            <div>
+              <div style={{ fontSize: 9, color: "var(--text-muted)" }}>Open</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-red)" }}>
+                -${s.commissions.openCost.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "var(--text-muted)" }}>Round-trip</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "var(--accent-red)" }}>
+                -${s.commissions.roundTrip.toFixed(2)}
+              </div>
+            </div>
+            <div>
+              <div style={{ fontSize: 9, color: "var(--text-muted)" }}>Net Profit</div>
+              <div style={{
+                fontSize: 12, fontWeight: 700,
+                color: s.commissions.netProfitAfterCommissions === null
+                  ? "var(--text-muted)"
+                  : s.commissions.netProfitAfterCommissions > 0
+                    ? "var(--accent-green)" : "var(--accent-red)",
+              }}>
+                {s.commissions.netProfitAfterCommissions === null
+                  ? "Unlimited"
+                  : fmt.usd(s.commissions.netProfitAfterCommissions)}
+              </div>
+            </div>
+          </div>
+          {s.commissions.impactPct > 5 && (
+            <div style={{
+              marginTop: 6, fontSize: 10, padding: "3px 8px", borderRadius: 4,
+              background: s.commissions.impactPct > 20 ? "rgba(239,68,68,0.1)" : "rgba(245,158,11,0.1)",
+              color: s.commissions.impactPct > 20 ? "var(--accent-red)" : "var(--accent-amber)",
+            }}>
+              Commissions eat {s.commissions.impactPct.toFixed(1)}% of max profit
+            </div>
+          )}
+        </div>
+      )}
       {/* Capital usage bar */}
       <div className="capital-bar-wrapper">
         <div className="capital-bar-label">

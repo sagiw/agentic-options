@@ -235,6 +235,20 @@ app.get("/api/recommendations", async (req, res) => {
         symbol,
         strategies: analysis.strategies.slice(0, 10).map((s, i) => {
           const estMargin = estimateMargin(s.strategy, analysis.underlyingPrice);
+          const isCredit = s.strategy.netDebit < 0;
+          const legCount = s.strategy.legs.length;
+          // IBKR typical commission: $0.65/contract for options
+          const commissionPerContract = 0.65;
+          const totalLegs = s.strategy.legs.reduce((sum, l) => sum + l.quantity, 0);
+          const estimatedCommission = totalLegs * commissionPerContract;
+          // Round-trip: open + close
+          const roundTripCommission = estimatedCommission * 2;
+          const maxProfitNum = s.strategy.maxProfit === "unlimited"
+            ? null : s.strategy.maxProfit as number;
+          const netProfitAfterCommissions = maxProfitNum !== null
+            ? maxProfitNum - roundTripCommission : null;
+          const commissionImpactPct = maxProfitNum !== null && maxProfitNum > 0
+            ? (roundTripCommission / maxProfitNum) * 100 : 0;
           return {
           id: i,
           name: s.strategy.name,
@@ -246,6 +260,32 @@ app.get("/api/recommendations", async (req, res) => {
           netDebit: s.strategy.netDebit,
           requiredCapital: s.strategy.requiredCapital,
           estimatedMargin: Math.round(estMargin),
+          // Profit mechanism metadata
+          profitMechanism: {
+            type: isCredit ? "credit" : "debit",
+            label: isCredit
+              ? "Premium Collection (Credit)"
+              : "Directional Move (Debit)",
+            labelHe: isCredit
+              ? "גביית פרמיה (קרדיט) — מרוויח מעמלות שנגבו מראש"
+              : "תנועת מחיר (דביט) — מרוויח רק אחרי הצלחה בניכוי עמלות",
+            description: isCredit
+              ? "You collect premium upfront and profit if the options expire worthless or lose value. Time decay (theta) works in your favor."
+              : "You pay premium upfront and profit only if the underlying moves in your favor beyond the breakeven point, after commissions.",
+            descriptionHe: isCredit
+              ? "אתה גובה פרמיה מראש ומרוויח אם האופציות פוקעות חסרות ערך. דעיכת זמן עובדת לטובתך."
+              : "אתה משלם פרמיה מראש ומרוויח רק אם הנכס נע לכיוון הנכון מעבר לנקודת האיזון, אחרי עמלות.",
+            thetaFavorable: isCredit,
+            collectsPremium: isCredit,
+          },
+          commissions: {
+            perLeg: commissionPerContract,
+            totalLegs,
+            openCost: estimatedCommission,
+            roundTrip: roundTripCommission,
+            netProfitAfterCommissions,
+            impactPct: commissionImpactPct,
+          },
           capitalPct: portfolio.account.availableFunds > 0
             ? (s.strategy.requiredCapital / portfolio.account.availableFunds) * 100
             : 0,
