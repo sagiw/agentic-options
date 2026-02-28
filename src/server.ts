@@ -1016,6 +1016,114 @@ app.get("/api/orders/verify", async (_req, res) => {
 });
 
 /**
+ * GET /api/history — Trade execution history from IBKR with commissions and P&L.
+ *
+ * Query params:
+ *   days — Number of days to look back (default: 30)
+ *
+ * Returns execution details grouped by order, with commissions and realized P&L.
+ * Falls back to locally tracked orders when IBKR is not connected.
+ */
+app.get("/api/history", async (req, res) => {
+  try {
+    const days = Math.min(parseInt(req.query.days as string) || 30, 90);
+    let executions: any[] = [];
+    let source = "local";
+
+    // Try IBKR first for real execution data
+    if (ibkr.isConnected) {
+      try {
+        executions = await ibkr.getExecutions(days);
+        source = "ibkr";
+        log.info(`History: ${executions.length} executions from IBKR (last ${days} days)`);
+      } catch (err) {
+        log.warn(`IBKR execution history failed: ${err}`);
+      }
+    }
+
+    // Group executions by orderId for multi-leg strategies
+    const orderMap = new Map<number, any>();
+    let totalCommissions = 0;
+    let totalRealizedPnL = 0;
+
+    for (const exec of executions) {
+      totalCommissions += exec.commission || 0;
+      totalRealizedPnL += exec.realizedPnL || 0;
+
+      const orderId = exec.orderId;
+      if (!orderMap.has(orderId)) {
+        orderMap.set(orderId, {
+          orderId,
+          symbol: exec.symbol,
+          time: exec.time,
+          legs: [],
+          totalCommission: 0,
+          totalRealizedPnL: 0,
+        });
+      }
+      const order = orderMap.get(orderId)!;
+      order.legs.push({
+        secType: exec.secType,
+        strike: exec.strike,
+        right: exec.right,
+        expiration: exec.expiration,
+        side: exec.side,
+        quantity: exec.quantity,
+        price: exec.price,
+        exchange: exec.exchange,
+        commission: exec.commission,
+        realizedPnL: exec.realizedPnL,
+      });
+      order.totalCommission += exec.commission || 0;
+      order.totalRealizedPnL += exec.realizedPnL || 0;
+    }
+
+    // Also include tracked local orders for completeness
+    const localOrders = trackedOrders
+      .filter((o) => {
+        const submitted = new Date(o.submittedAt);
+        return Date.now() - submitted.getTime() < days * 24 * 60 * 60 * 1000;
+      })
+      .map((o) => ({
+        orderId: o.id,
+        symbol: o.symbol,
+        strategyName: o.strategyName,
+        type: o.type,
+        status: o.status,
+        legs: o.legs,
+        ibkrOrderIds: o.ibkrOrderIds,
+        riskPct: o.riskPct,
+        requiredCapital: o.requiredCapital,
+        expiration: o.expiration,
+        submittedAt: o.submittedAt,
+        message: o.message,
+      }));
+
+    res.json({
+      success: true,
+      data: {
+        source,
+        daysBack: days,
+        executions: Array.from(orderMap.values()).sort(
+          (a, b) => (b.time || "").localeCompare(a.time || "")
+        ),
+        localOrders: localOrders.reverse(),
+        summary: {
+          totalExecutions: executions.length,
+          totalOrders: orderMap.size,
+          totalLocalOrders: localOrders.length,
+          totalCommissions: Math.round(totalCommissions * 100) / 100,
+          totalRealizedPnL: Math.round(totalRealizedPnL * 100) / 100,
+        },
+      },
+    });
+  } catch (err) {
+    log.error("History endpoint failed", { error: err });
+    res.status(500).json({ success: false, error: String(err) });
+  }
+});
+
+/**
  * GET /api/portfolio-plan — Multi-symbol portfolio plan.
  * Analyzes all specified symbols, picks the best strategies across all of them,
  * and builds a combined plan showing how to reach the monthly income target.

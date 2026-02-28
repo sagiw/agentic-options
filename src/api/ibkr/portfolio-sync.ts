@@ -1693,6 +1693,99 @@ export class PortfolioSync extends EventEmitter<SyncEvents> {
     });
   }
 
+  /**
+   * Query IBKR for recent trade executions and commissions.
+   * Uses reqExecutions with an optional time filter.
+   * Returns execution details including fill price, commission, and realized P&L.
+   */
+  async getExecutions(daysBack: number = 7): Promise<any[]> {
+    this.ensureConnected();
+    const EventNameRef = this.eventNameRef!;
+
+    return new Promise((resolve) => {
+      const executions: any[] = [];
+      const commissions = new Map<string, any>(); // execId → commission data
+
+      const onExecDetails = (reqId: number, contract: any, execution: any) => {
+        if (reqId !== -3) return;
+        executions.push({
+          execId: execution?.execId,
+          orderId: execution?.orderId,
+          symbol: contract?.symbol,
+          secType: contract?.secType,
+          strike: contract?.strike,
+          right: contract?.right,
+          expiration: contract?.lastTradeDateOrContractMonth,
+          side: execution?.side,
+          quantity: execution?.shares || execution?.cumQty,
+          price: execution?.price || execution?.avgPrice,
+          time: execution?.time,
+          exchange: execution?.exchange,
+          account: execution?.acctNumber,
+          commission: 0,
+          realizedPnL: 0,
+        });
+      };
+
+      const onCommissionReport = (report: any) => {
+        if (report?.execId) {
+          commissions.set(report.execId, {
+            commission: report.commission,
+            currency: report.currency,
+            realizedPnL: report.realizedPnL,
+          });
+        }
+      };
+
+      const onExecDetailsEnd = (reqId: number) => {
+        if (reqId !== -3) return;
+        // Merge commissions into executions
+        for (const exec of executions) {
+          const comm = commissions.get(exec.execId);
+          if (comm) {
+            exec.commission = comm.commission ?? 0;
+            exec.realizedPnL = comm.realizedPnL ?? 0;
+          }
+        }
+        cleanup();
+        resolve(executions);
+      };
+
+      const cleanup = () => {
+        this.ib.removeListener(EventNameRef.execDetails, onExecDetails);
+        this.ib.removeListener(EventNameRef.execDetailsEnd, onExecDetailsEnd);
+        this.ib.removeListener(EventNameRef.commissionReport, onCommissionReport);
+      };
+
+      this.ib.on(EventNameRef.execDetails, onExecDetails);
+      this.ib.on(EventNameRef.execDetailsEnd, onExecDetailsEnd);
+      this.ib.on(EventNameRef.commissionReport, onCommissionReport);
+
+      // Build time filter: "yyyyMMdd-HH:mm:ss" format
+      const fromDate = new Date(Date.now() - daysBack * 24 * 60 * 60 * 1000);
+      const timeFilter = `${fromDate.getFullYear()}${String(fromDate.getMonth() + 1).padStart(2, "0")}${String(fromDate.getDate()).padStart(2, "0")}-00:00:00`;
+
+      // reqExecutions(reqId, filter)
+      this.ib.reqExecutions(-3, {
+        time: timeFilter,
+      });
+
+      // Timeout after 15s
+      setTimeout(() => {
+        cleanup();
+        // Merge what we have
+        for (const exec of executions) {
+          const comm = commissions.get(exec.execId);
+          if (comm) {
+            exec.commission = comm.commission ?? 0;
+            exec.realizedPnL = comm.realizedPnL ?? 0;
+          }
+        }
+        resolve(executions);
+      }, 15_000);
+    });
+  }
+
   // ══════════════════════════════════════════════════════════
   //  CONTRACT RESOLUTION
   // ══════════════════════════════════════════════════════════
