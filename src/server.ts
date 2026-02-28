@@ -268,15 +268,9 @@ app.get("/api/recommendations", async (req, res) => {
             label: isCredit
               ? "Premium Collection (Credit)"
               : "Directional Move (Debit)",
-            labelHe: isCredit
-              ? "גביית פרמיה (קרדיט) — מרוויח מעמלות שנגבו מראש"
-              : "תנועת מחיר (דביט) — מרוויח רק אחרי הצלחה בניכוי עמלות",
             description: isCredit
               ? "You collect premium upfront and profit if the options expire worthless or lose value. Time decay (theta) works in your favor."
               : "You pay premium upfront and profit only if the underlying moves in your favor beyond the breakeven point, after commissions.",
-            descriptionHe: isCredit
-              ? "אתה גובה פרמיה מראש ומרוויח אם האופציות פוקעות חסרות ערך. דעיכת זמן עובדת לטובתך."
-              : "אתה משלם פרמיה מראש ומרוויח רק אם הנכס נע לכיוון הנכון מעבר לנקודת האיזון, אחרי עמלות.",
             thetaFavorable: isCredit,
             collectsPremium: isCredit,
           },

@@ -3347,7 +3347,7 @@ function StrategyCard({ strategy, index, selected, onSelect, onApprove }) {
               {s.profitMechanism.type === "credit" ? "Premium Collection" : "Directional Profit"}
             </div>
             <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1, lineHeight: 1.4 }}>
-              {s.profitMechanism.labelHe}
+              {s.profitMechanism.description}
             </div>
           </div>
           {s.profitMechanism.thetaFavorable && (
@@ -5215,12 +5215,12 @@ function App() {
                     onChange={(e) => setGoals({ ...goals, maxDTE: Number(e.target.value) || 60 })} />
                 </div>
                 <div className="goal-field" style={{ gridColumn: "1 / -1" }}>
-                  <label>Profit Preference — איך אתה רוצה להרוויח?</label>
+                  <label>Profit Preference</label>
                   <div className="goal-strat-chips">
                     {[
-                      { id: "any", label: "All / הכל", desc: "Show all strategies" },
-                      { id: "credit", label: "💰 Credit / פרמיה", desc: "Collect premium upfront — profit from time decay" },
-                      { id: "debit", label: "🎯 Debit / כיווני", desc: "Pay premium — profit from price movement" },
+                      { id: "any", label: "All", desc: "Show all strategies" },
+                      { id: "credit", label: "💰 Credit", desc: "Collect premium upfront — profit from time decay" },
+                      { id: "debit", label: "🎯 Debit", desc: "Pay premium — profit from price movement" },
                     ].map((opt) => (
                       <button key={opt.id}
                         className={`goal-chip ${goals.profitPreference === opt.id ? "active" : ""}`}
@@ -5246,8 +5246,8 @@ function App() {
                       lineHeight: 1.5,
                     }}>
                       {goals.profitPreference === "credit"
-                        ? "🟢 יוצגו רק אסטרטגיות קרדיט — גביית פרמיה מראש, דעיכת זמן (Theta) עובדת לטובתך. מתאים למי שרוצה הכנסה שוטפת מעמלות."
-                        : "🔵 יוצגו רק אסטרטגיות דביט — תשלום פרמיה מראש, רווח מתנועת מחיר. מתאים למי שמוכן לשלם עמלות ולהרוויח מתנועה גדולה."}
+                        ? "🟢 Credit only — collect premium upfront, time decay (Theta) works in your favor. Best for steady income from premiums."
+                        : "🔵 Debit only — pay premium upfront, profit from price movement. Best for larger directional gains."}
                     </div>
                   )}
                 </div>
